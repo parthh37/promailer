@@ -15,13 +15,16 @@ mod imp {
     use windows_service::service::{
         ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept, ServiceDependency,
         ServiceErrorControl, ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo,
-        ServiceStartType, ServiceState, ServiceStatus, ServiceType,
+        ServiceStartType, ServiceState, ServiceStatus, ServiceType, UserEventCode,
     };
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
     use windows_service::{define_windows_service, service_dispatcher};
 
     static CONFIG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+    /// User-defined control code that asks the service to reload (`sc control Promailer 200`).
+    const RELOAD_CODE: u32 = 200;
 
     define_windows_service!(ffi_service_main, service_main);
 
@@ -49,8 +52,12 @@ mod imp {
                 let _ = handler_tx.send(Control::Stop);
                 ServiceControlHandlerResult::NoError
             }
-            // `sc control Promailer paramchange` reloads the configuration.
+            // `sc control Promailer paramchange` (or user code 200) reloads the configuration.
             ServiceControl::ParamChange => {
+                let _ = handler_tx.send(Control::Reload);
+                ServiceControlHandlerResult::NoError
+            }
+            ServiceControl::UserEvent(code) if code.to_raw() == RELOAD_CODE => {
                 let _ = handler_tx.send(Control::Reload);
                 ServiceControlHandlerResult::NoError
             }
@@ -69,7 +76,8 @@ mod imp {
                 process_id: None,
             });
         };
-        set(ServiceState::StartPending, ServiceControlAccept::empty(), 0, Duration::from_secs(30));
+        // Generous hint: recovering a very large queue from disk can take a while.
+        set(ServiceState::StartPending, ServiceControlAccept::empty(), 0, Duration::from_secs(120));
 
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("promailer").build()?;
         let res = rt.block_on(server::run(&config, false, rx, || {
@@ -89,8 +97,11 @@ mod imp {
     }
 
     pub fn install(config: &Path, account: Option<String>, password: Option<String>) -> Result<()> {
-        let config =
-            std::fs::canonicalize(config).with_context(|| format!("config file {} not found", config.display()))?;
+        // std::path::absolute (unlike canonicalize) avoids \\?\ verbatim paths in the service command line.
+        let config = std::path::absolute(config)?;
+        if !config.is_file() {
+            anyhow::bail!("config file {} not found", config.display());
+        }
         crate::config::Config::load(&config).context("refusing to install with an invalid configuration")?;
         let exe = std::env::current_exe()?;
         let manager = ServiceManager::local_computer(
@@ -190,8 +201,8 @@ mod imp {
 
     pub fn reload() -> Result<()> {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-        let svc = manager.open_service(SERVICE_NAME, ServiceAccess::PAUSE_CONTINUE)?;
-        svc.notify(ServiceControl::ParamChange)?;
+        let svc = manager.open_service(SERVICE_NAME, ServiceAccess::USER_DEFINED_CONTROL)?;
+        svc.notify(UserEventCode::from_raw(RELOAD_CODE).context("invalid reload control code")?)?;
         println!("Reload signal sent; see promailer log for the result.");
         Ok(())
     }

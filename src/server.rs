@@ -48,7 +48,7 @@ pub async fn run(
         "Promailer starting"
     );
 
-    let result = run_inner(config, config_path, &mut control, on_ready).await;
+    let result = run_inner(config, config_path, console, &mut control, on_ready).await;
     if let Err(e) = &result {
         error!(error = format!("{e:#}"), "fatal error");
     }
@@ -59,6 +59,7 @@ pub async fn run(
 async fn run_inner(
     config: Config,
     config_path: &Path,
+    console: bool,
     control: &mut mpsc::UnboundedReceiver<Control>,
     on_ready: impl FnOnce(),
 ) -> Result<()> {
@@ -101,6 +102,16 @@ async fn run_inner(
     info!(queued = app.queue.len(), "Promailer ready");
     on_ready();
 
+    // Ctrl+C only applies to console mode. If the handler can't be registered (e.g. no
+    // console under the SCM) the future must never resolve, or we'd shut down at once.
+    let ctrl_c = async move {
+        if console && tokio::signal::ctrl_c().await.is_ok() {
+            return;
+        }
+        std::future::pending::<()>().await
+    };
+    tokio::pin!(ctrl_c);
+
     loop {
         tokio::select! {
             msg = control.recv() => match msg {
@@ -111,7 +122,7 @@ async fn run_inner(
                 }
                 Some(Control::Stop) | None => break,
             },
-            _ = tokio::signal::ctrl_c() => {
+            _ = &mut ctrl_c => {
                 info!("Ctrl+C received");
                 break;
             }
