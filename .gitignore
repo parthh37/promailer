@@ -1,0 +1,11 @@
+/target
+/dist
+/data
+# Never commit secrets or live configuration
+*.pem
+*.key
+/dkim
+/certs
+promailer.toml
+!config/promailer.example.toml
+.DS_Store

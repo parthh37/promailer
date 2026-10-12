@@ -1,0 +1,208 @@
+# =============================================================================
+#  Promailer configuration
+#
+#  Relative paths are resolved against the directory containing this file
+#  (TLS / DKIM keys) or against server.data_dir (logs, pickup).
+#  Durations: "30s", "10m", "12h", "2d".   Sizes: 1048576, "512KB", "25MB".
+#
+#  Apply changes:  promailer service reload   (listener/log/data_dir changes need a restart)
+#  Validate:       promailer config check
+# =============================================================================
+
+[server]
+# Fully-qualified host name. MUST match the reverse DNS (PTR) of your sending IP.
+hostname = "mail.example.com"
+# data_dir = 'C:\ProgramData\Promailer'      # queue, pickup, badmail, drop, logs
+# IIS "Masquerade domain": rewrite the envelope sender domain on outbound mail.
+# masquerade_domain = "example.com"
+# IIS "Maximum hop count".
+max_hop_count = 30
+# Domains delivered to the Drop directory instead of the internet.
+local_domains = []
+# postmaster = "postmaster@example.com"     # From: address of bounce messages
+shutdown_grace = "30s"
+# fsync every queued message before answering 250 OK (recommended).
+durable_writes = true
+
+[logging]
+dir = "logs"
+level = "info"            # error | warn | info | debug | trace
+format = "text"           # text | json
+rotation = "daily"        # daily | hourly
+max_files = 30            # rotated files kept per log stream
+protocol_log = true       # smtp.*.log  - SMTP transcript (IIS "Enable logging")
+delivery_log = true       # delivery.*.log - one line per delivery attempt
+console = true            # also log to the console in `promailer run`
+
+# -----------------------------------------------------------------------------
+# Listeners  (IIS: General > IP address / TCP port)
+# -----------------------------------------------------------------------------
+
+# Port 25 for trusted applications on this machine / LAN (relay by IP).
+[[listener]]
+name = "smtp"
+bind = "0.0.0.0:25"
+tls = "none"              # none | starttls | implicit  (starttls/implicit need [tls])
+require_tls = false
+require_auth = false
+
+# Authenticated submission for remote applications (uncomment with [tls]).
+# [[listener]]
+# name = "submission"
+# bind = "0.0.0.0:587"
+# tls = "starttls"
+# require_tls = true
+# require_auth = true
+
+# [[listener]]
+# name = "smtps"
+# bind = "0.0.0.0:465"
+# tls = "implicit"
+# require_auth = true
+
+# [tls]
+# cert = 'certs\fullchain.pem'     # PEM chain, leaf first (e.g. from win-acme / certbot)
+# key  = 'certs\privkey.pem'
+
+# -----------------------------------------------------------------------------
+# Limits  (IIS: General > Limit connections, Messages tab)
+# -----------------------------------------------------------------------------
+[limits]
+max_connections = 1000
+max_connections_per_ip = 100
+command_timeout = "5m"            # IIS "Connection time-out"
+data_timeout = "10m"
+session_timeout = "1h"
+max_message_size = "25MB"         # IIS "Limit message size"
+max_session_size = "500MB"        # IIS "Limit session size"
+max_messages_per_connection = 100 # IIS "Limit number of messages per connection"
+max_recipients_per_message = 1000 # IIS "Limit number of recipients per message"
+max_errors_per_session = 10
+messages_per_minute_per_ip = 0    # 0 = unlimited
+messages_per_minute_per_user = 0
+connections_per_minute_per_ip = 0
+max_queue_size = 0                # refuse new mail (4xx) above this many queued messages
+
+# -----------------------------------------------------------------------------
+# Access  (IIS: Access > Connection control / Relay restrictions)
+# -----------------------------------------------------------------------------
+[access]
+default = "allow"                 # allow = "All except the list below", deny = "Only the list below"
+allow = []                        # e.g. ["10.0.0.0/8", "192.168.1.25"]
+deny = []                         # deny always wins
+relay_allow = ["127.0.0.1/32", "::1/128"]   # may relay to ANY domain
+relay_authenticated = true        # "Allow all computers which successfully authenticate to relay"
+reverse_dns_lookup = false        # "Perform reverse DNS lookup on incoming messages"
+require_reverse_dns = false
+
+# -----------------------------------------------------------------------------
+# SMTP AUTH users  (IIS: Access > Authentication > Basic)
+#   promailer user hash-password
+# -----------------------------------------------------------------------------
+# [[user]]
+# username = "webapp"
+# password_hash = "$argon2id$v=19$..."
+# allowed_sender_domains = ["example.com"]   # optional: restrict MAIL FROM
+# allowed_ips = ["203.0.113.0/24"]           # optional: restrict login source
+# messages_per_minute = 600                  # optional
+
+# -----------------------------------------------------------------------------
+# Delivery  (IIS: Delivery tab, Outbound security, Advanced)
+# -----------------------------------------------------------------------------
+[delivery]
+max_connections = 500             # IIS "Limit number of connections"
+max_connections_per_domain = 20   # IIS "Limit number of connections per domain"
+max_concurrent_messages = 2000
+connect_timeout = "30s"
+command_timeout = "5m"
+data_timeout = "10m"
+# IIS first / second / third / subsequent retry intervals; the last one repeats.
+retry_intervals = ["10m", "10m", "10m", "15m", "30m", "1h"]
+expire_after = "2d"               # IIS "Expiration timeout" -> NDR
+delay_notification_after = "12h"  # IIS "Delay notification" (0s = never)
+send_ndr = true
+# ndr_copy_to = "bounces@example.com"   # IIS "Send copy of Non-Delivery Report to"
+tls = "opportunistic"             # opportunistic | required | disabled
+verify_certificates = false
+ipv6 = false
+attempt_direct_before_smarthost = false
+connection_idle_timeout = "30s"   # reuse outbound connections for this long
+max_messages_per_outbound_connection = 100
+queue_scan_interval = "1s"
+
+# IIS "Smart host": send everything through another server (e.g. Office 365, SES).
+# [delivery.smarthost]
+# host = "smtp.office365.com"
+# port = 587
+# tls = "starttls"                # none | starttls | implicit
+# username = "relay@example.com"
+# password = "..."
+# verify_certificate = true
+
+# -----------------------------------------------------------------------------
+# Outbound IPs: bind delivery to specific local addresses (rotated round-robin
+# within a pool). Each IP needs its own PTR record matching `helo`.
+# -----------------------------------------------------------------------------
+# [[outbound_ip]]
+# address = "203.0.113.10"
+# helo = "mail1.example.com"
+# pool = "default"
+#
+# [[outbound_ip]]
+# address = "203.0.113.11"
+# helo = "mail2.example.com"
+# pool = "bulk"
+
+# -----------------------------------------------------------------------------
+# Per-destination rules  (IIS: Domains > Remote domain properties)
+# -----------------------------------------------------------------------------
+# [[domain]]
+# name = "*.outlook.com"
+# max_connections = 5
+# tls = "required"
+# pool = "default"
+#
+# [[domain]]
+# name = "partner.example.org"
+# [domain.smarthost]
+# host = "relay.partner.example.org"
+# port = 25
+# tls = "starttls"
+
+# -----------------------------------------------------------------------------
+# DKIM signing.  promailer dkim generate --domain example.com --selector s1
+# Messages are signed when their From: domain matches.
+# -----------------------------------------------------------------------------
+# [[dkim]]
+# domain = "example.com"
+# selector = "s1"
+# private_key = 'dkim\example.com.s1.pem'
+# algorithm = "rsa-sha256"          # rsa-sha256 | ed25519-sha256
+# include_subdomains = false
+# expire = "7d"                     # optional x= tag
+
+# -----------------------------------------------------------------------------
+# Pickup directory (IIS-compatible; works with .NET SpecifiedPickupDirectory)
+# -----------------------------------------------------------------------------
+[pickup]
+enabled = true
+dir = "pickup"
+poll_interval = "2s"
+settle_time = "500ms"
+
+# -----------------------------------------------------------------------------
+# HTTP API (send mail, manage queue, stats, DNS checks)
+#   promailer api-key generate --name webapp
+# -----------------------------------------------------------------------------
+[api]
+enabled = true
+bind = "127.0.0.1:8025"
+allow = ["127.0.0.1/32", "::1/128"]
+max_body_size = "35MB"
+
+# [[api.keys]]
+# name = "webapp"
+# key_sha256 = "<64 hex chars>"
+# permissions = ["send"]            # send | queue | admin
+# allowed_sender_domains = ["example.com"]
+# messages_per_minute = 1000
