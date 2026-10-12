@@ -164,6 +164,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Text: AnsiString;
+  Content: String;
   Host: String;
   Code: Integer;
 begin
@@ -175,8 +176,10 @@ begin
       Host := Lowercase(Trim(HostPage.Values[0]));
       if Host <> '' then
       begin
-        StringChangeEx(Text, 'hostname = "mail.example.com"', 'hostname = "' + Host + '"', True);
-        SaveStringToFile(ConfigPath, Text, False);
+        // StringChangeEx needs a (Unicode) String; the config file itself is ASCII.
+        Content := String(Text);
+        StringChangeEx(Content, 'hostname = "mail.example.com"', 'hostname = "' + Host + '"', True);
+        SaveStringToFile(ConfigPath, AnsiString(Content), False);
       end;
     end;
     // Upgrade of an existing service that the user didn't ask to start: restore previous state.
