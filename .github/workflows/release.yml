@@ -42,13 +42,65 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      # Code signing switches on once the SIGNING_CERT_PFX_BASE64 secret exists (plus
+      # SIGNING_CERT_PASSWORD; optional variable SIGNING_TIMESTAMP_URL). Until then builds are unsigned.
+      - name: Detect code signing
+        id: signing
+        shell: pwsh
+        env:
+          PFX: ${{ secrets.SIGNING_CERT_PFX_BASE64 }}
+        run: |
+          $enabled = [bool]$env:PFX
+          "enabled=$($enabled.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if (-not $enabled) { Write-Host "::warning::Code signing is not configured (secret SIGNING_CERT_PFX_BASE64); binaries are unsigned." }
+
+      - name: Sign promailer.exe
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          SIGNING_CERT_PFX_BASE64: ${{ secrets.SIGNING_CERT_PFX_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
+        run: .\scripts\sign.ps1 target\release\promailer.exe
+
       - name: Build installer
         shell: pwsh
+        env:
+          SIGNING: ${{ steps.signing.outputs.enabled }}
+          SIGNING_CERT_PFX_BASE64: ${{ secrets.SIGNING_CERT_PFX_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
-          & $iscc /DAppVersion=$env:VERSION installer\promailer.iss
+          $isccArgs = @("/DAppVersion=$env:VERSION")
+          if ($env:SIGNING -eq 'true') {
+            # Inno signs Setup.exe and the uninstaller it embeds; $f is the file to sign.
+            $sign = Resolve-Path scripts\sign.ps1
+            $isccArgs += '/DSign', "/Spromailer=pwsh -NoProfile -File `"$sign`" `$f"
+          }
+          & $iscc @isccArgs installer\promailer.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      # WiX 5 is pinned: WiX 7+ requires accepting the OSMF EULA, which may carry a fee.
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          if ($LASTEXITCODE -ne 0) { throw "installing WiX failed" }
+          $wix = Join-Path $env:USERPROFILE '.dotnet\tools\wix.exe'
+          & $wix build -arch x64 -d Version=$env:VERSION installer\promailer.wxs -o build\msi\Promailer-$env:VERSION-x64.msi
+          if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
+          Copy-Item build\msi\Promailer-$env:VERSION-x64.msi dist\
+
+      - name: Sign MSI
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          SIGNING_CERT_PFX_BASE64: ${{ secrets.SIGNING_CERT_PFX_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
+        run: .\scripts\sign.ps1 "dist\Promailer-$env:VERSION-x64.msi"
 
       - name: Build portable zip
         shell: pwsh
@@ -59,9 +111,13 @@ jobs:
           Compress-Archive -Path "$stage\*" -DestinationPath "$stage.zip" -Force
           Remove-Item -Recurse $stage
 
-      - name: Smoke test installer
+      - name: Smoke test Setup.exe
         shell: pwsh
         run: .\scripts\smoke-test.ps1 -Installer (Resolve-Path "dist\Promailer-$env:VERSION-x64-Setup.exe")
+
+      - name: Smoke test MSI
+        shell: pwsh
+        run: .\scripts\smoke-test.ps1 -Installer (Resolve-Path "dist\Promailer-$env:VERSION-x64.msi")
 
       - name: Checksums
         shell: pwsh
@@ -79,12 +135,15 @@ jobs:
       - name: Release notes from CHANGELOG
         if: github.ref_type == 'tag'
         shell: pwsh
+        env:
+          SIGNING: ${{ steps.signing.outputs.enabled }}
         run: |
           $log = Get-Content CHANGELOG.md -Raw
           $m = [regex]::Match($log, "(?ms)^## \[$([regex]::Escape($env:VERSION))\][^\n]*\n(.*?)(?=^## \[|\z)")
           if (-not $m.Success) { throw "CHANGELOG.md has no section for $env:VERSION" }
           $notes = $m.Groups[1].Value.Trim()
-          $notes += "`n`n### Downloads`n- **Promailer-$env:VERSION-x64-Setup.exe** - installer (Windows service, default config, PATH)`n- **Promailer-$env:VERSION-x64-portable.zip** - standalone executable`n- **SHA256SUMS.txt** - checksums"
+          $notes += "`n`n### Downloads`n- **Promailer-$env:VERSION-x64-Setup.exe** - installer (Windows service, default config, PATH)`n- **Promailer-$env:VERSION-x64.msi** - MSI for Group Policy / SCCM / Intune (``msiexec /i ... /qn HOSTNAME=mail.example.com``)`n- **Promailer-$env:VERSION-x64-portable.zip** - standalone executable`n- **SHA256SUMS.txt** - checksums"
+          if ($env:SIGNING -ne 'true') { $notes += "`n`nBinaries in this release are not code-signed." }
           Set-Content release-notes.md $notes -Encoding utf8
 
       - name: Publish GitHub release

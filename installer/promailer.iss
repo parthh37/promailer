@@ -1,5 +1,6 @@
 ; Promailer Windows installer (Inno Setup 6)
 ; Build: ISCC.exe /DAppVersion=0.1.0 installer\promailer.iss
+; Signed build (release pipeline): add /DSign "/Spromailer=powershell -NoProfile -File scripts\sign.ps1 $f"
 
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
@@ -36,6 +37,11 @@ CloseApplications=no
 ChangesEnvironment=yes
 SetupLogging=yes
 VersionInfoVersion={#AppVersion}
+#ifdef Sign
+; Signs Setup.exe and the uninstaller with the sign tool named "promailer" (passed via ISCC /S).
+SignTool=promailer
+SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -83,6 +89,10 @@ Filename: "{app}\{#AppExe}"; Parameters: "service uninstall"; Flags: runhidden w
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Promailer SMTP"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveFirewall"
 
 [Registry]
+; Application-log event source: Event Viewer reads message text from promailer.exe.
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\EventLog\Application\Promailer"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\EventLog\Application\Promailer"; ValueType: expandsz; ValueName: "EventMessageFile"; ValueData: "{app}\{#AppExe}"
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\EventLog\Application\Promailer"; ValueType: dword; ValueName: "TypesSupported"; ValueData: "7"
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Tasks: path; Check: NeedsAddPath(ExpandConstant('{app}'))
 
 [Code]
@@ -113,6 +123,18 @@ begin
     exit;
   end;
   Result := Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Current) + ';') = 0;
+end;
+
+function InitializeSetup: Boolean;
+begin
+  Result := True;
+  // The MSI and Setup.exe manage the same service; only one may own an installation.
+  if RegValueExists(HKLM64, 'SOFTWARE\Promailer', 'InstalledByMsi') then
+  begin
+    SuppressibleMsgBox('Promailer is installed on this computer with the MSI package (e.g. via Group Policy or SCCM).' + #13#10#13#10 +
+      'Upgrade it with the new MSI, or uninstall it first.', mbError, MB_OK, IDOK);
+    Result := False;
+  end;
 end;
 
 procedure InitializeWizard;

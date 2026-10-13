@@ -19,6 +19,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls-pemfile = "2"
 webpki-roots = "1"
+# Certificate details (subject, validity) for both PEM and Windows-store certificates.
+x509-cert = { version = "0.2", default-features = false }
+ring = "0.17"
 
 # DNS + email authentication (DKIM signing, SPF/DMARC evaluation)
 hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }
@@ -58,6 +61,18 @@ subtle = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
+# TLS private keys held by CNG (LocalMachine\My), including non-exportable and TPM-backed keys.
+rustls-cng = { version = "0.7", default-features = false, features = ["ring", "tls12", "logging"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_System_EventLog",
+    "Win32_System_Registry",
+] }
+
+[build-dependencies]
+# Embeds the Event Log message table and version info into promailer.exe.
+embed-resource = "3"
 
 [dev-dependencies]
 tempfile = "3"

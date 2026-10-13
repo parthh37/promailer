@@ -152,6 +152,9 @@ pub struct LoggingConfig {
     pub delivery_log: bool,
     /// Also log to stdout (ignored when running as a Windows service).
     pub console: bool,
+    /// Write start/stop, reload, certificate and error events to the Windows Application
+    /// log (source "Promailer") when running as a service.
+    pub event_log: bool,
 }
 
 impl Default for LoggingConfig {
@@ -165,6 +168,7 @@ impl Default for LoggingConfig {
             protocol_log: true,
             delivery_log: true,
             console: true,
+            event_log: true,
         }
     }
 }
@@ -217,13 +221,59 @@ fn default_listener_tls() -> ListenerTls {
 // [tls]
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// Server certificate: either PEM files (`cert` + `key`) or, on Windows, a certificate
+/// in the LocalMachine certificate store selected by `thumbprint`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsConfig {
     /// PEM certificate chain (leaf first).
-    pub cert: PathBuf,
+    #[serde(default)]
+    pub cert: Option<PathBuf>,
     /// PEM private key (PKCS#8, PKCS#1 or SEC1).
-    pub key: PathBuf,
+    #[serde(default)]
+    pub key: Option<PathBuf>,
+    /// SHA-1 thumbprint of a certificate in `LocalMachine\<store>`, as shown by
+    /// certlm.msc or `Get-ChildItem Cert:\LocalMachine\My`.
+    #[serde(default)]
+    pub thumbprint: Option<String>,
+    /// LocalMachine store name: "My" (Personal, default) or e.g. "WebHosting".
+    #[serde(default)]
+    pub store: Option<String>,
+}
+
+/// Where the server certificate comes from, after validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TlsSource<'a> {
+    Files { cert: &'a Path, key: &'a Path },
+    Store { store: &'a str, thumbprint: &'a str },
+}
+
+impl TlsConfig {
+    pub fn source(&self) -> Result<TlsSource<'_>> {
+        match (&self.cert, &self.key, &self.thumbprint) {
+            (Some(cert), Some(key), None) => {
+                if self.store.is_some() {
+                    bail!("[tls] store only applies to thumbprint");
+                }
+                Ok(TlsSource::Files { cert, key })
+            }
+            (None, None, Some(thumbprint)) => {
+                Ok(TlsSource::Store { store: self.store.as_deref().unwrap_or("My"), thumbprint })
+            }
+            (_, _, Some(_)) => bail!("[tls] use either thumbprint or cert/key, not both"),
+            (Some(_), None, None) => bail!("[tls] cert is set but key is missing"),
+            (None, Some(_), None) => bail!("[tls] key is set but cert is missing"),
+            (None, None, None) => {
+                bail!("[tls] needs cert and key (PEM files) or thumbprint (Windows certificate store)")
+            }
+        }
+    }
+}
+
+/// Normalise a thumbprint pasted from the Windows certificate dialog: drop spaces, colons
+/// and the invisible U+200E mark that certmgr prepends when copying, then upper-case.
+pub fn normalize_thumbprint(raw: &str) -> String {
+    raw.chars().filter(|c| c.is_ascii_hexdigit()).collect::<String>().to_ascii_uppercase()
 }
 
 // ---------------------------------------------------------------------------
@@ -749,8 +799,8 @@ impl Config {
         self.logging.dir = abs(&self.logging.dir, &data);
         self.pickup.dir = abs(&self.pickup.dir, &data);
         if let Some(tls) = &mut self.tls {
-            tls.cert = abs(&tls.cert, config_dir);
-            tls.key = abs(&tls.key, config_dir);
+            tls.cert = tls.cert.as_deref().map(|p| abs(p, config_dir));
+            tls.key = tls.key.as_deref().map(|p| abs(p, config_dir));
         }
         for d in &mut self.dkim {
             d.private_key = abs(&d.private_key, config_dir);
@@ -770,6 +820,10 @@ impl Config {
         }
         for k in &mut self.api.keys {
             k.key_sha256 = k.key_sha256.trim().to_lowercase();
+        }
+        if let Some(tls) = &mut self.tls {
+            tls.thumbprint = tls.thumbprint.as_deref().map(normalize_thumbprint);
+            tls.store = tls.store.as_deref().map(|s| s.trim().to_string());
         }
         if self.listeners.is_empty() {
             self.listeners.push(ListenerConfig {
@@ -847,11 +901,26 @@ impl Config {
             }
         }
         if let Some(tls) = &self.tls {
-            if !tls.cert.exists() {
-                bail!("TLS certificate not found: {}", tls.cert.display());
-            }
-            if !tls.key.exists() {
-                bail!("TLS key not found: {}", tls.key.display());
+            match tls.source()? {
+                TlsSource::Files { cert, key } => {
+                    if !cert.exists() {
+                        bail!("TLS certificate not found: {}", cert.display());
+                    }
+                    if !key.exists() {
+                        bail!("TLS key not found: {}", key.display());
+                    }
+                }
+                TlsSource::Store { store, thumbprint } => {
+                    if !cfg!(windows) {
+                        bail!("[tls] thumbprint (Windows certificate store) is only supported on Windows");
+                    }
+                    if thumbprint.len() != 40 {
+                        bail!("[tls] thumbprint must be 40 hex characters (SHA-1), got {}", thumbprint.len());
+                    }
+                    if store.is_empty() || store.contains('\\') {
+                        bail!("[tls] store must be a LocalMachine store name such as \"My\" or \"WebHosting\"");
+                    }
+                }
             }
         }
         Ok(())
@@ -922,6 +991,29 @@ mod tests {
         assert_eq!(cfg.domain_rule("x.example.com").unwrap().max_connections, Some(1));
         assert_eq!(cfg.domain_rule("example.com").unwrap().max_connections, Some(1));
         assert!(cfg.domain_rule("example.org").is_none());
+    }
+
+    #[test]
+    fn thumbprint_pasted_from_certmgr_is_normalised() {
+        // certmgr's Details tab copies with a leading U+200E and spaces between byte pairs.
+        let pasted = "\u{200e}3a 1f 00 b2 c4 d5 e6 f7 08 19 2a 3b 4c 5d 6e 7f 80 91 a2 b3";
+        assert_eq!(normalize_thumbprint(pasted), "3A1F00B2C4D5E6F708192A3B4C5D6E7F8091A2B3");
+        assert_eq!(normalize_thumbprint("3A:1F:00"), "3A1F00");
+    }
+
+    #[test]
+    fn tls_source_selection() {
+        let tls = |toml_text: &str| -> TlsConfig { toml::from_str(toml_text).unwrap() };
+        let files = tls("cert = 'c.pem'\nkey = 'k.pem'");
+        assert!(matches!(files.source().unwrap(), TlsSource::Files { .. }));
+        let store = tls("thumbprint = 'AB'");
+        assert_eq!(store.source().unwrap(), TlsSource::Store { store: "My", thumbprint: "AB" });
+        let hosting = tls("thumbprint = 'AB'\nstore = 'WebHosting'");
+        assert_eq!(hosting.source().unwrap(), TlsSource::Store { store: "WebHosting", thumbprint: "AB" });
+        assert!(tls("cert = 'c.pem'\nkey = 'k.pem'\nthumbprint = 'AB'").source().is_err());
+        assert!(tls("cert = 'c.pem'").source().is_err());
+        assert!(tls("cert = 'c.pem'\nkey = 'k.pem'\nstore = 'My'").source().is_err());
+        assert!(tls("").source().is_err());
     }
 
     #[test]

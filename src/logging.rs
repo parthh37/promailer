@@ -9,12 +9,15 @@
 //! Protocol and delivery lines are emitted with the `smtp_protocol` and
 //! `delivery` tracing targets and routed by per-layer filters. Writers are
 //! non-blocking: a slow disk never stalls an SMTP session.
+//!
+//! When running as a Windows service, selected events also go to the Windows
+//! Application log (see `eventlog`).
 
 use crate::config::{LogFormat, LogRotation, LoggingConfig};
 use anyhow::{Context, Result};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
-use tracing_subscriber::filter::{filter_fn, EnvFilter};
+use tracing_subscriber::filter::{filter_fn, EnvFilter, LevelFilter};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, Layer};
@@ -39,7 +42,7 @@ fn appender(cfg: &LoggingConfig, prefix: &str) -> Result<RollingFileAppender> {
         .with_context(|| format!("creating log appender in {}", cfg.dir.display()))
 }
 
-pub fn init(cfg: &LoggingConfig, console: bool) -> Result<LogGuards> {
+pub fn init(cfg: &LoggingConfig, console: bool, event_log: bool) -> Result<LogGuards> {
     std::fs::create_dir_all(&cfg.dir).with_context(|| format!("creating log directory {}", cfg.dir.display()))?;
 
     let mut guards = Vec::new();
@@ -94,11 +97,16 @@ pub fn init(cfg: &LoggingConfig, console: bool) -> Result<LogGuards> {
         None
     };
 
+    // INFO cap: an unfiltered layer would make tracing enable debug/trace events everywhere.
+    let event_log_layer =
+        if event_log { crate::eventlog::layer().map(|l| l.with_filter(LevelFilter::INFO)) } else { None };
+
     tracing_subscriber::registry()
         .with(main_layer)
         .with(console_layer)
         .with(protocol_layer)
         .with(delivery_layer)
+        .with(event_log_layer)
         .try_init()
         .context("initialising logging")?;
 

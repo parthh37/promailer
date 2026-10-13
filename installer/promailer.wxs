@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Promailer MSI for Group Policy / SCCM / Intune deployment (WiX Toolset 5).
+
+  Build:  wix build -arch x64 -d Version=0.1.0 installer\promailer.wxs -o dist\Promailer-0.1.0-x64.msi
+
+  Public properties (msiexec /i Promailer.msi /qn PROPERTY=value, or an MST transform):
+    HOSTNAME       server.hostname written into a newly created promailer.toml
+                   (default: the computer name). Existing configurations are never modified.
+    START_SERVICE  1 (default) starts the service after installation; 0 leaves it stopped.
+
+  The live configuration (%ProgramData%\Promailer\promailer.toml), queue, keys and logs are
+  not MSI-owned: they survive upgrades, repairs and uninstallation.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Promailer"
+           Manufacturer="Promailer"
+           Version="$(var.Version)"
+           UpgradeCode="3F0C2B7A-9E41-4D8B-A6C5-2E7D19B4F803"
+           Scope="perMachine"
+           InstallerVersion="500"
+           Compressed="yes">
+
+    <!-- Never change UpgradeCode: it links upgrades to existing installations. -->
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of Promailer is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/parthh37/promailer" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/parthh37/promailer/issues" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="START_SERVICE" Value="1" Secure="yes" />
+    <Property Id="HOSTNAME" Secure="yes" />
+    <SetProperty Id="HOSTNAME" Value="[ComputerName]" Before="CostFinalize" Sequence="both" Condition="NOT HOSTNAME" />
+
+    <!-- Setup.exe (Inno Setup) and the MSI manage the same service: only one may be installed. -->
+    <Property Id="INNO_INSTALLED">
+      <RegistrySearch Id="InnoUninstallKey" Root="HKLM" Bitness="always64"
+                      Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{6B8F3C1E-4E2A-4C59-9C7B-5D1F0E2A9B43}_is1"
+                      Name="UninstallString" Type="raw" />
+    </Property>
+    <Launch Condition="Installed OR NOT INNO_INSTALLED"
+            Message="Promailer was installed with Setup.exe. Uninstall it from Apps &amp; features first (your configuration, queue and logs are kept), then run this MSI." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Promailer" />
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DATAFOLDER" Name="Promailer">
+        <Directory Id="DKIMFOLDER" Name="dkim" />
+        <Directory Id="CERTSFOLDER" Name="certs" />
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Promailer" Level="1">
+      <ComponentGroupRef Id="Program" />
+      <ComponentGroupRef Id="Data" />
+    </Feature>
+
+    <!-- Create promailer.toml on first install only (never overwritten, never removed). -->
+    <CustomAction Id="CreateConfig"
+                  FileRef="PromailerExe"
+                  ExeCommand="config init --keep-existing --hostname &quot;[HOSTNAME]&quot; --output &quot;[DATAFOLDER]promailer.toml&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <InstallExecuteSequence>
+      <Custom Action="CreateConfig" After="InstallFiles" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="Program" Directory="INSTALLFOLDER">
+      <Component Id="Service">
+        <File Id="PromailerExe" Source="target\release\promailer.exe" KeyPath="yes" />
+        <ServiceInstall Name="Promailer"
+                        DisplayName="Promailer SMTP Server"
+                        Description="High-performance outbound SMTP server with DKIM, queueing and delivery management."
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Vital="yes"
+                        Arguments="service run --config &quot;[DATAFOLDER]promailer.toml&quot;">
+          <ServiceDependency Id="Tcpip" />
+          <ServiceDependency Id="Dnscache" />
+          <!-- Same settings as `promailer service install`. -->
+          <ServiceConfig DelayedAutoStart="yes"
+                         FailureActionsWhen="failedToStopOrReturnedError"
+                         PreShutdownDelay="60000"
+                         OnInstall="yes" OnReinstall="yes" />
+          <ServiceConfigFailureActions ResetPeriod="86400" OnInstall="yes" OnReinstall="yes">
+            <Failure Action="restartService" Delay="5000" />
+            <Failure Action="restartService" Delay="30000" />
+            <Failure Action="restartService" Delay="60000" />
+          </ServiceConfigFailureActions>
+        </ServiceInstall>
+        <ServiceControl Id="StopPromailer" Name="Promailer" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+
+      <!-- Separate so a failed start (e.g. port 25 still used by IIS SMTP) never rolls back the install:
+           the service reports the reason in the Application log instead. -->
+      <Component Id="StartService" Condition="START_SERVICE = &quot;1&quot;">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Promailer" Name="StartServiceOnInstall" Type="integer" Value="1" KeyPath="yes" />
+        <ServiceControl Id="StartPromailer" Name="Promailer" Start="install" Wait="no" />
+      </Component>
+
+      <Component Id="EventSource">
+        <RegistryKey Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\EventLog\Application\Promailer" ForceDeleteOnUninstall="yes">
+          <RegistryValue Name="EventMessageFile" Type="expandable" Value="[#PromailerExe]" KeyPath="yes" />
+          <RegistryValue Name="TypesSupported" Type="integer" Value="7" />
+        </RegistryKey>
+      </Component>
+
+      <Component Id="SystemPath">
+        <!-- Also tells Setup.exe that the MSI owns this machine's installation. -->
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Promailer" Name="InstalledByMsi" Type="string" Value="$(var.Version)" KeyPath="yes" />
+        <Environment Id="Path" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" />
+      </Component>
+
+      <Component Id="Docs">
+        <File Source="README.md" />
+        <File Source="CHANGELOG.md" />
+        <File Source="config\promailer.example.toml" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <!-- Data folders: Administrators and SYSTEM only (DKIM keys, password hashes). Kept on uninstall. -->
+    <ComponentGroup Id="Data">
+      <Component Id="DataFolder" Directory="DATAFOLDER" Guid="9A3D6E21-5B7C-4F08-8E19-C4A2D70B6F35" Permanent="yes">
+        <CreateFolder>
+          <PermissionEx Sddl="D:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)" />
+        </CreateFolder>
+      </Component>
+      <Component Id="DkimFolder" Directory="DKIMFOLDER" Guid="5E8B1C47-2D9A-4B63-A0F4-71C3E8D29A56" Permanent="yes">
+        <CreateFolder>
+          <PermissionEx Sddl="D:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)" />
+        </CreateFolder>
+      </Component>
+      <Component Id="CertsFolder" Directory="CERTSFOLDER" Guid="C17F4A90-8E26-4D5B-9B3E-0A6D52F81C74" Permanent="yes">
+        <CreateFolder>
+          <PermissionEx Sddl="D:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)" />
+        </CreateFolder>
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

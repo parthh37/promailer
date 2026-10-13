@@ -9,3 +9,4 @@
 promailer.toml
 !config/promailer.example.toml
 .DS_Store
+/build

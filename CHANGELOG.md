@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Windows integration
+- TLS certificates from the Windows certificate store: `[tls] thumbprint` (and optional `store`)
+  selects a certificate in `LocalMachine\My`. Keys are used through CNG, so non-exportable,
+  TPM- and HSM-backed keys work. Renewals made by AD CS auto-enrollment are followed automatically.
+- `promailer cert list` shows store certificates with thumbprint, expiry and private-key availability.
+- The TLS certificate (store or PEM) is re-read hourly; renewed certificates are used without a restart.
+  `config check` shows the certificate's subject, thumbprint and validity.
+- Windows Event Log: start, stop, reload, start-up failures, certificate problems and errors are written
+  to the Application log (source "Promailer") with stable event IDs for SCOM and other monitoring tools.
+  Start-up failures, including invalid configuration, now appear in the Event Log.
+- MSI package for Group Policy, SCCM and Intune (`HOSTNAME`, `START_SERVICE` properties),
+  built and smoke-tested with every release next to `Setup.exe`.
+- Release binaries, `Setup.exe` and the MSI are Authenticode-signed once a signing certificate is configured.
+- `promailer.exe` carries Windows version information.
+- `promailer config init --hostname <name> --keep-existing`.
+
 ## [0.1.0] - 2026-10-13
 
 First public release.

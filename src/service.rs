@@ -6,6 +6,7 @@ pub const DESCRIPTION: &str = "High-performance outbound SMTP server with DKIM, 
 #[cfg(windows)]
 mod imp {
     use super::*;
+    use crate::eventlog;
     use crate::server::{self, Control};
     use anyhow::{Context, Result};
     use std::ffi::OsString;
@@ -37,9 +38,17 @@ mod imp {
 
     fn service_main(_args: Vec<OsString>) {
         if let Err(e) = run_service() {
-            // Logging may not be initialised if config loading failed; leave a breadcrumb.
+            // Logging may not be initialised if config loading failed; leave a breadcrumb
+            // and, unless the tracing layer already reported it, an Event Log entry.
             let path = std::env::temp_dir().join("promailer-service-error.log");
             let _ = std::fs::write(&path, format!("{}: {e:#}\n", chrono::Utc::now()));
+            if !eventlog::layer_active() {
+                eventlog::report(
+                    eventlog::Kind::Error,
+                    eventlog::id::FATAL,
+                    &format!("Promailer could not start: {e:#}"),
+                );
+            }
         }
     }
 
@@ -142,6 +151,10 @@ mod imp {
             ]),
         })?;
         svc.set_failure_actions_on_non_crash_failures(true)?;
+        let exe = std::env::current_exe()?;
+        if let Err(e) = eventlog::register_source(&exe) {
+            eprintln!("warning: Event Log source not registered ({e:#}); events will show without descriptions");
+        }
         println!("Service '{SERVICE_NAME}' installed (config: {}).", config.display());
         println!("Start it with: promailer service start");
         Ok(())
@@ -162,6 +175,9 @@ mod imp {
             }
         }
         svc.delete()?;
+        if let Err(e) = eventlog::unregister_source() {
+            eprintln!("warning: {e:#}");
+        }
         println!("Service '{SERVICE_NAME}' removed. Queue and logs were kept.");
         Ok(())
     }

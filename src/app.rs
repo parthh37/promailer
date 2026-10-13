@@ -5,9 +5,10 @@ use crate::auth::AuthCache;
 use crate::config::Config;
 use crate::dkim::DkimRegistry;
 use crate::dns::Dns;
+use crate::eventlog::id as event_id;
 use crate::queue::Queue;
 use crate::stats::Stats;
-use crate::tls::ClientTls;
+use crate::tls::{CertHealth, CertInfo, ClientTls, ServerCert};
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use std::net::IpAddr;
@@ -23,6 +24,8 @@ pub struct App {
     pub config_path: PathBuf,
     pub dkim: ArcSwap<DkimRegistry>,
     pub tls_acceptor: ArcSwap<Option<TlsAcceptor>>,
+    /// The certificate behind `tls_acceptor`.
+    pub tls_cert: ArcSwap<Option<CertInfo>>,
     pub dns: Arc<Dns>,
     pub queue: Arc<Queue>,
     pub stats: Stats,
@@ -39,13 +42,14 @@ pub struct App {
 impl App {
     pub fn new(config: Config, config_path: PathBuf, dns: Arc<Dns>, queue: Arc<Queue>) -> Result<Arc<Self>> {
         let dkim = DkimRegistry::load(&config.dkim).context("loading DKIM keys")?;
-        let acceptor = load_acceptor(&config)?;
+        let cert = load_tls(&config)?;
         let (shutdown_tx, _) = watch::channel(false);
         Ok(Arc::new(Self {
             config: ArcSwap::from_pointee(config),
             config_path,
             dkim: ArcSwap::from_pointee(dkim),
-            tls_acceptor: ArcSwap::from_pointee(acceptor),
+            tls_acceptor: ArcSwap::from_pointee(cert.as_ref().map(|c| crate::tls::acceptor(c.config.clone()))),
+            tls_cert: ArcSwap::from_pointee(cert.map(|c| c.info)),
             dns,
             queue,
             stats: Stats::default(),
@@ -98,12 +102,32 @@ impl App {
             warnings.push("api.bind / api.enabled changes require a service restart".into());
         }
         let dkim = DkimRegistry::load(&new.dkim)?;
-        let acceptor = load_acceptor(&new)?;
+        let cert = load_tls(&new)?;
         self.dkim.store(Arc::new(dkim));
-        self.tls_acceptor.store(Arc::new(acceptor));
+        self.install_cert(cert);
         self.config.store(Arc::new(new));
-        tracing::info!(warnings = ?warnings, "configuration reloaded");
+        tracing::info!(event_id = event_id::RELOADED, warnings = ?warnings, "configuration reloaded");
         Ok(warnings)
+    }
+
+    /// Swap in a server certificate (or none); logs when it differs from the current one.
+    pub fn install_cert(&self, cert: Option<ServerCert>) {
+        let old = self.tls_cert.load_full();
+        let new = cert.as_ref().map(|c| c.info.clone());
+        if let (Some(old), Some(new)) = (old.as_ref(), new.as_ref()) {
+            if old.thumbprint != new.thumbprint {
+                tracing::info!(
+                    event_id = event_id::CERT_CHANGED,
+                    previous = %old.thumbprint,
+                    thumbprint = %new.thumbprint,
+                    subject = %new.subject,
+                    expires = %new.not_after.format("%Y-%m-%d"),
+                    "TLS certificate changed"
+                );
+            }
+        }
+        self.tls_acceptor.store(Arc::new(cert.map(|c| crate::tls::acceptor(c.config))));
+        self.tls_cert.store(Arc::new(new));
     }
 
     /// Periodic housekeeping for in-memory limiter state.
@@ -114,9 +138,33 @@ impl App {
     }
 }
 
-fn load_acceptor(cfg: &Config) -> Result<Option<TlsAcceptor>> {
-    match &cfg.tls {
-        Some(t) => Ok(Some(crate::tls::acceptor(crate::tls::load_server_config(&t.cert, &t.key)?))),
-        None => Ok(None),
+/// Load the configured server certificate and apply the validity policy: rejected
+/// certificates fail the load, warnings are logged (and reach the Event Log).
+pub fn load_tls(cfg: &Config) -> Result<Option<ServerCert>> {
+    let Some(tls) = &cfg.tls else { return Ok(None) };
+    let cert = crate::tls::load_server(tls).context("loading TLS certificate")?;
+    apply_cert_policy(&cert.info)?;
+    Ok(Some(cert))
+}
+
+pub fn apply_cert_policy(info: &CertInfo) -> Result<()> {
+    match info.health(chrono::Utc::now()) {
+        CertHealth::Healthy => Ok(()),
+        CertHealth::Warn(msg) => {
+            log_cert_warning(info, &msg);
+            Ok(())
+        }
+        CertHealth::Reject(msg) => anyhow::bail!("TLS certificate {} rejected: {msg}", info.thumbprint),
     }
+}
+
+pub fn log_cert_warning(info: &CertInfo, msg: &str) {
+    tracing::warn!(
+        event_id = event_id::CERT_EXPIRING,
+        thumbprint = %info.thumbprint,
+        subject = %info.subject,
+        source = %info.source,
+        expires = %info.not_after.format("%Y-%m-%d %H:%M UTC"),
+        "{msg}"
+    );
 }

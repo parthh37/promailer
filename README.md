@@ -54,6 +54,28 @@ Silent install: `Promailer-x.y.z-x64-Setup.exe /VERYSILENT /TASKS="service,servi
 
 A portable zip is also published for manual deployments.
 
+### MSI (Group Policy, SCCM, Intune)
+
+`Promailer-<version>-x64.msi` installs the same files, service and data folder for managed
+deployment:
+
+```bat
+msiexec /i Promailer-x.y.z-x64.msi /qn HOSTNAME=mail.example.com
+```
+
+| Property        | Default        | Meaning                                                           |
+|-----------------|----------------|-------------------------------------------------------------------|
+| `HOSTNAME`      | computer name  | `server.hostname` for a newly created `promailer.toml`            |
+| `START_SERVICE` | `1`            | `0` installs the service without starting it                      |
+
+For Group Policy, set properties with an MST transform. The configuration is created only if
+missing and is never modified, repaired or removed by the MSI. Upgrades are major upgrades:
+deploy the new MSI over the old one. A service that fails to start (for example, because port 25
+is still used by IIS SMTP) does not roll back the installation; the reason is logged as Event
+ID 1004. Firewall rules are not created by the MSI; manage them with Group Policy.
+
+Use either the MSI or `Setup.exe` on a machine, not both. Each refuses to install over the other.
+
 ## Quick start
 
 ```bash
@@ -75,7 +97,22 @@ promailer config check
    ```bash
    promailer check --domain example.com
    ```
-5. **Apply**:
+5. **Enable TLS** (optional, for STARTTLS on port 587 / implicit TLS on 465) with a certificate
+   from the Windows certificate store, the same one IIS would use:
+   ```bash
+   promailer cert list
+   ```
+   Copy the thumbprint of a valid certificate with `key = yes` into the config. Pasting from
+   certlm.msc works as is: spaces and hidden characters are ignored.
+   ```toml
+   [tls]
+   thumbprint = "3A1F00B2C4D5E6F708192A3B4C5D6E7F8091A2B3"
+   # store = "WebHosting"    # default "My" (Personal); always LocalMachine
+   ```
+   Non-exportable, TPM- and HSM-backed keys work, since the key never leaves Windows. If the service
+   runs as an account other than LocalSystem, grant it Read access in certlm.msc (All Tasks >
+   Manage Private Keys). PEM files (`cert`/`key`) remain supported.
+6. **Apply**:
    ```bash
    promailer service reload
    ```
@@ -129,6 +166,7 @@ default; if yours does, configure `[delivery.smarthost]`.
 | Limit number of connections / Connection time-out | `limits.max_connections`, `limits.command_timeout` |
 | Enable logging (W3C) | `logging.protocol_log` (`smtp.*.log`) + `delivery.*.log` |
 | Anonymous access / Basic authentication / Requires TLS | `listener.require_auth`, `[[user]]`, `listener.require_tls` |
+| Secure communication > Certificate | `[tls] thumbprint` (Windows certificate store) or `[tls] cert`/`key` (PEM) |
 | Connection control (grant/deny list) | `access.default`, `access.allow`, `access.deny` |
 | Relay restrictions + "allow authenticated to relay" | `access.relay_allow`, `access.relay_authenticated` |
 | Limit message size / session size | `limits.max_message_size`, `limits.max_session_size` |
@@ -217,6 +255,29 @@ Listener, logging and `data_dir` changes need a service restart; everything else
 **Monitoring**: scrape `/metrics`; alert on `promailer_queue_size` and
 `promailer_recipients_deferred` growth.
 
+**Windows Event Log**: the service writes to the **Application** log, source **Promailer**,
+so SCOM and other monitoring tools can alert on it (disable with `[logging] event_log = false`).
+Event IDs are stable:
+
+| ID   | Level       | Meaning                                                                 |
+|------|-------------|-------------------------------------------------------------------------|
+| 1000 | Information | Service started (version, host name, listeners, TLS certificate)        |
+| 1001 | Information | Service stopped                                                         |
+| 1002 | Information | Configuration reloaded                                                  |
+| 1003 | Error       | Configuration reload failed; the previous configuration stays active    |
+| 1004 | Error       | Service could not start or stopped because of an error                  |
+| 1010 | Warning     | TLS certificate expires soon (checked at load and daily)                |
+| 1011 | Error       | TLS certificate in use is not valid (e.g. expired)                      |
+| 1012 | Information | A different TLS certificate is now in use (renewal picked up)           |
+| 1100 | Error       | Any other error (at most 20 per 10 minutes)                             |
+| 1199 | Warning     | Error limit reached; further errors only go to `promailer.log`          |
+
+Routine warnings caused by remote clients (failed logins, relay attempts) stay in the log files.
+
+**TLS certificates**: Promailer re-reads the configured certificate every hour. Renewed PEM files
+(e.g. from win-acme) and certificates renewed in the Windows certificate store (AD CS
+auto-enrollment) are picked up without a restart.
+
 **Upgrades**: run the new installer. The service is stopped, the binary replaced and the service
 restarted. The queue and configuration are preserved.
 
@@ -235,6 +296,13 @@ cargo test
 The installer is built with [Inno Setup 6](https://jrsoftware.org/isinfo.php):
 `ISCC.exe /DAppVersion=0.1.0 installer\promailer.iss`
 
+The MSI is built with [WiX Toolset 5](https://wixtoolset.org/) (`dotnet tool install --global wix --version 5.0.2`):
+`wix build -arch x64 -d Version=0.1.0 installer\promailer.wxs -o dist\Promailer-0.1.0-x64.msi`
+
+Windows-only code can be type-checked from macOS or Linux with
+[cargo-xwin](https://github.com/rust-cross/cargo-xwin) (needs LLVM's `clang-cl`, `lld-link` and `llvm-lib`):
+`cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets`
+
 ## Releasing
 
 Every release ships a Windows installer automatically:
@@ -243,5 +311,18 @@ Every release ships a Windows installer automatically:
 2. commit, then tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`
 
 The [Release workflow](.github/workflows/release.yml) then runs the tests on Windows, builds the
-`Setup.exe` and portable zip, **installs the setup on a clean Windows runner, starts the service
-and sends test mail through it**, and only then publishes the GitHub release with checksums.
+`Setup.exe`, MSI and portable zip, **installs both installers on a clean Windows runner, starts the
+service and sends test mail through it** (including STARTTLS with Windows-store certificates and
+Event Log checks), and only then publishes the GitHub release with checksums.
+
+**Code signing** turns on automatically once these repository settings exist; until then releases
+are unsigned:
+
+| Setting                   | Kind     | Value                                                      |
+|---------------------------|----------|------------------------------------------------------------|
+| `SIGNING_CERT_PFX_BASE64` | secret   | `[Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))` |
+| `SIGNING_CERT_PASSWORD`   | secret   | the .pfx password                                           |
+| `SIGNING_TIMESTAMP_URL`   | variable | optional RFC 3161 server (default `http://timestamp.digicert.com`) |
+
+`promailer.exe` is signed before it is packaged, so the installed binary, `Setup.exe`, its
+uninstaller and the MSI all carry signatures.
