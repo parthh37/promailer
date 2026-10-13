@@ -1,6 +1,8 @@
 //! Lock-free counters exposed via the API (`/api/v1/stats`) and Prometheus (`/metrics`).
 
+use parking_lot::Mutex;
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 #[derive(Default)]
@@ -104,5 +106,84 @@ impl StatsSnapshot {
             }
         }
         out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Time series for the dashboard
+// ---------------------------------------------------------------------------
+
+/// Seconds between samples.
+pub const SAMPLE_INTERVAL_SECS: u64 = 10;
+/// 24 hours of samples.
+const HISTORY_CAPACITY: usize = 8640;
+
+/// Point-in-time copy of the cumulative counters plus queue gauges. Clients
+/// derive rates from the difference between consecutive samples.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Sample {
+    /// Unix time in seconds.
+    pub t: i64,
+    pub received: u64,
+    pub delivered: u64,
+    pub deferred: u64,
+    pub bounced: u64,
+    pub queue: usize,
+    pub in_flight: usize,
+}
+
+#[derive(Default)]
+pub struct StatsHistory {
+    samples: Mutex<VecDeque<Sample>>,
+}
+
+impl StatsHistory {
+    pub fn push(&self, s: Sample) {
+        let mut v = self.samples.lock();
+        if v.len() >= HISTORY_CAPACITY {
+            v.pop_front();
+        }
+        v.push_back(s);
+    }
+
+    /// Samples strictly newer than `since` (unix seconds), oldest first.
+    pub fn since(&self, since: i64) -> Vec<Sample> {
+        let v = self.samples.lock();
+        let start = v.partition_point(|s| s.t <= since);
+        v.range(start..).copied().collect()
+    }
+}
+
+impl StatsSnapshot {
+    pub fn sample(&self, t: i64) -> Sample {
+        Sample {
+            t,
+            received: self.messages_received + self.pickup_processed + self.api_messages,
+            delivered: self.recipients_delivered,
+            deferred: self.recipients_deferred,
+            bounced: self.recipients_bounced,
+            queue: self.queue_size,
+            in_flight: self.deliveries_in_flight,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_since_and_capacity() {
+        let h = StatsHistory::default();
+        for t in 0..(HISTORY_CAPACITY as i64 + 5) {
+            h.push(Sample { t, received: 0, delivered: 0, deferred: 0, bounced: 0, queue: 0, in_flight: 0 });
+        }
+        assert_eq!(h.since(-1).len(), HISTORY_CAPACITY);
+        assert_eq!(h.since(-1)[0].t, 5);
+        let tail = h.since(HISTORY_CAPACITY as i64 + 2);
+        assert_eq!(
+            tail.iter().map(|s| s.t).collect::<Vec<_>>(),
+            vec![HISTORY_CAPACITY as i64 + 3, HISTORY_CAPACITY as i64 + 4]
+        );
     }
 }

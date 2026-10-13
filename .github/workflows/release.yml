@@ -37,10 +37,10 @@ jobs:
           "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Test
-        run: cargo test --release --locked
+        run: cargo test --workspace --release --locked
 
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --workspace --release --locked
 
       - name: Build installer
         shell: pwsh
@@ -55,7 +55,7 @@ jobs:
         run: |
           $stage = "dist\Promailer-$env:VERSION-x64-portable"
           New-Item -ItemType Directory -Force $stage | Out-Null
-          Copy-Item target\release\promailer.exe, README.md, CHANGELOG.md, config\promailer.example.toml $stage
+          Copy-Item target\release\promailer.exe, target\release\promailer-manager.exe, README.md, CHANGELOG.md, config\promailer.example.toml $stage
           Compress-Archive -Path "$stage\*" -DestinationPath "$stage.zip" -Force
           Remove-Item -Recurse $stage
 
@@ -84,7 +84,7 @@ jobs:
           $m = [regex]::Match($log, "(?ms)^## \[$([regex]::Escape($env:VERSION))\][^\n]*\n(.*?)(?=^## \[|\z)")
           if (-not $m.Success) { throw "CHANGELOG.md has no section for $env:VERSION" }
           $notes = $m.Groups[1].Value.Trim()
-          $notes += "`n`n### Downloads`n- **Promailer-$env:VERSION-x64-Setup.exe** - installer (Windows service, default config, PATH)`n- **Promailer-$env:VERSION-x64-portable.zip** - standalone executable`n- **SHA256SUMS.txt** - checksums"
+          $notes += "`n`n### Downloads`n- **Promailer-$env:VERSION-x64-Setup.exe** - installer (Windows service, Promailer Manager GUI, default config, PATH)`n- **Promailer-$env:VERSION-x64-portable.zip** - standalone executables (service + manager GUI)`n- **SHA256SUMS.txt** - checksums"
           Set-Content release-notes.md $notes -Encoding utf8
 
       - name: Publish GitHub release

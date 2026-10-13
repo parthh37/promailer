@@ -96,8 +96,12 @@ async fn run_inner(
     if pickup_enabled {
         tasks.push(tokio::spawn(crate::pickup::run(app.clone())));
     }
+    let (history_tx, history_rx) = mpsc::channel(10_000);
+    app.events.attach_history(history_tx);
+    let history = tokio::spawn(crate::events::run_writer(app.clone(), history_rx));
     let scheduler = tokio::spawn(crate::queue::run(app.clone()));
     tasks.push(tokio::spawn(housekeeping(app.clone())));
+    tasks.push(tokio::spawn(sample_stats(app.clone())));
 
     info!(queued = app.queue.len(), "Promailer ready");
     on_ready();
@@ -138,6 +142,8 @@ async fn run_inner(
     for t in tasks {
         let _ = tokio::time::timeout(Duration::from_secs(5), t).await;
     }
+    // Last, so events from the final deliveries are flushed to history.
+    let _ = tokio::time::timeout(Duration::from_secs(5), history).await;
     Ok(())
 }
 
@@ -149,6 +155,22 @@ async fn housekeeping(app: Arc<App>) {
             _ = tick.tick() => {
                 app.housekeeping();
                 app.queue.routes.housekeeping(app.cfg().delivery.connection_idle_timeout).await;
+            }
+            _ = shutdown.changed() => break,
+        }
+    }
+}
+
+/// Feed the dashboard's throughput / queue-size time series.
+async fn sample_stats(app: Arc<App>) {
+    let mut shutdown = app.shutdown_rx();
+    let mut tick = tokio::time::interval(Duration::from_secs(crate::stats::SAMPLE_INTERVAL_SECS));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                let snap = crate::api::snapshot(&app);
+                app.stats_history.push(snap.sample(chrono::Utc::now().timestamp()));
             }
             _ = shutdown.changed() => break,
         }

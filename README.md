@@ -24,6 +24,7 @@ service and keeps every concept IIS 6 administrators already know.
 - [Sending mail](#sending-mail)
 - [DNS setup for deliverability](#dns-setup-for-deliverability)
 - [IIS 6 SMTP feature mapping](#iis-6-smtp-feature-mapping)
+- [Promailer Manager (GUI)](#promailer-manager-gui)
 - [HTTP API](#http-api)
 - [Operations](#operations)
 - [Building from source](#building-from-source)
@@ -151,6 +152,56 @@ default; if yours does, configure `[delivery.smarthost]`.
 **Beyond IIS:** DKIM signing, deliverability checker, HTTP API, rate limits, outbound IP pools,
 connection reuse, Prometheus metrics, hot configuration reload, crash-safe queue.
 
+## Promailer Manager (GUI)
+
+`promailer-manager.exe` is a native desktop app installed alongside the service (Start menu →
+Promailer → Promailer Manager). It is laid out like the IIS 6 SMTP manager: a console tree on the
+left, a details pane on the right, and a **Properties** sheet for the virtual server. It talks to
+the service over the HTTP API, so it can manage the local server or a remote one, and never runs
+inside the mail flow.
+
+**SMTP Virtual Server → Properties** (toolbar, Action menu, or double-click the node) has the
+familiar IIS tabs. Settings are edited in forms; only the settings you change are written to
+`promailer.toml`, so its comments and layout are kept:
+
+| Tab | Settings |
+|---|---|
+| General | IP addresses and ports (listeners, encryption, require authentication), connection limit and time-out, logging |
+| Access | connection control (granted/denied lists), relay restrictions, reverse DNS lookup, SMTP AUTH users (passwords are hashed in the Manager and never sent in clear) |
+| Messages | message/session size, messages per connection, recipients per message, queue limit, non-delivery reports |
+| Delivery | retry intervals, expiration, delay notification, outbound TLS, outbound connections, FQDN, masquerade domain, hop count, smart host |
+
+| Tree node | What it does |
+|---|---|
+| Status | state, queue, throughput, delivered / deferred / bounced and bounce rate over 15 min – 24 h, with a chart |
+| Queue | browse and filter queued messages, per-recipient status and last remote response, headers, retry or delete (single or bulk), retry all |
+| Message Search | find messages by recipient, sender, subject, queue ID or remote response across the queue and the message history; per-message timeline |
+| Delivery Log | live delivery events (queued, sent, deferred, bounced, expired, deleted, NDR) with filters |
+| Domains | local domains (Drop folder) and remote-domain rules (smart host, TLS policy, connection limit) |
+| DKIM Keys | create RSA/Ed25519 keys (generated on the server; the private key never leaves it), show the TXT record to publish, verify it is published, remove keys |
+| DNS Check | rDNS/FCrDNS, HELO, SPF, DKIM, DMARC and MX report for a sending domain |
+| Configuration File | edit `promailer.toml` directly with syntax highlighting and full validation |
+
+Every change is validated exactly as a reload would validate it, the previous file is kept in
+`config-backups\`, and the service reloads without dropping connections.
+
+**Connecting**: create a key and give it the `admin` permission (`queue` is enough for read-only
+monitoring; the configuration editor and DNS check need `admin`):
+
+```
+promailer api-key generate --name manager
+```
+
+Add the printed `[[api.keys]]` block to `promailer.toml` with `permissions = ["admin"]`, run
+`promailer service reload`, then enter `http://127.0.0.1:8025` and the key in the Manager's
+connection dialog. To manage a remote server, bind the API to a reachable address and restrict it
+with `api.allow`. The API is plain HTTP, so use it across trusted networks only (or put it behind a
+TLS reverse proxy).
+
+The Manager renders with Direct3D 12 and falls back to Windows' built-in software renderer, so it
+works on GPU-less servers over Remote Desktop. If it doesn't start, run
+`promailer-manager.exe --opengl`.
+
 ## HTTP API
 
 Authenticate with `Authorization: Bearer <key>` or `X-API-Key: <key>`. Permissions per key:
@@ -163,14 +214,24 @@ Authenticate with `Authorization: Bearer <key>` or `X-API-Key: <key>`. Permissio
 | `GET /metrics` | (`api.allow`) | Prometheus metrics |
 | `POST /api/v1/messages` | send | send JSON message (see below) |
 | `POST /api/v1/messages/raw` | send | send a raw RFC 5322 message `{from?, to?, raw \| raw_base64}` |
-| `GET /api/v1/queue?limit=&offset=` | queue | list queued messages |
+| `GET /api/v1/queue?limit=&offset=&q=` | queue | list queued messages, optionally filtered |
 | `GET /api/v1/queue/{id}` | queue | queue entry with per-recipient status |
+| `GET /api/v1/queue/{id}/headers` | queue | header block of a queued message |
 | `POST /api/v1/queue/{id}/retry` | queue | retry now |
 | `POST /api/v1/queue/retry` | queue | retry everything now |
 | `DELETE /api/v1/queue/{id}` | queue | delete without NDR |
 | `GET /api/v1/stats` | queue | counters |
+| `GET /api/v1/stats/history?since=` | queue | 10-second samples of counters and queue size (last 24 h) |
+| `GET /api/v1/events?after=&limit=` | queue | live event feed; pass the returned `last_seq` as `after` |
+| `GET /api/v1/search?q=&kind=&days=&limit=` | queue | search the queue and message history |
 | `GET /api/v1/check/{domain}?ip=` | admin | deliverability report |
 | `POST /api/v1/reload` | admin | reload configuration |
+| `GET /api/v1/config` | admin | configuration file text, path and SHA-256 |
+| `POST /api/v1/config/validate` | admin | validate `{text}` without applying it |
+| `PUT /api/v1/config` | admin | validate, back up, save and reload `{text, base_sha256}`; `409` if the file changed since it was read |
+| `GET /api/v1/dkim` | admin | configured DKIM keys with the TXT record to publish and whether DNS matches |
+| `POST /api/v1/dkim` | admin | generate a key on the server and add it to the configuration `{domain, selector, algorithm?, bits?, include_subdomains?}` |
+| `DELETE /api/v1/dkim/{domain}/{selector}` | admin | remove a key from the configuration (the key file is kept) |
 
 JSON send body:
 
@@ -214,6 +275,9 @@ Listener, logging and `data_dir` changes need a service restart; everything else
 01J9...  from=<orders@example.com> to=<a@gmail.com> status=sent attempt=1 relay=gmail-smtp-in.l.google.com [142.250.x.x] delay=1s response="250 2.0.0 OK ..."
 ```
 
+**History**: every queue/delivery event is also written to `history\YYYY-MM-DD.jsonl` (one JSON
+object per line, kept for `history.retention_days`). This is what message search reads.
+
 **Monitoring**: scrape `/metrics`; alert on `promailer_queue_size` and
 `promailer_recipients_deferred` growth.
 
@@ -225,12 +289,14 @@ restarted. The queue and configuration are preserved.
 Requires Rust (stable) and, on Windows, the MSVC build tools.
 
 ```bash
-cargo build --release
+cargo build --workspace --release
 ```
 
 ```bash
-cargo test
+cargo test --workspace
 ```
+
+This builds both `promailer` (the service) and `promailer-manager` (the GUI, in `manager/`).
 
 The installer is built with [Inno Setup 6](https://jrsoftware.org/isinfo.php):
 `ISCC.exe /DAppVersion=0.1.0 installer\promailer.iss`

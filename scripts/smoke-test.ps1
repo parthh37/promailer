@@ -25,6 +25,7 @@ Step "Installing $Installer"
 $p = Start-Process $Installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS="service,!service\start,path"', '/LOG=install.log' -Wait -PassThru
 if ($p.ExitCode -ne 0) { Fail "installer exit code $($p.ExitCode)" }
 if (-not (Test-Path $exe)) { Fail "promailer.exe not installed" }
+if (-not (Test-Path (Join-Path $app 'promailer-manager.exe'))) { Fail "promailer-manager.exe not installed" }
 if (-not (Test-Path $config)) { Fail "default configuration not created" }
 if (-not (Get-Service Promailer -ErrorAction SilentlyContinue)) { Fail "service not registered" }
 & $exe --version
@@ -68,6 +69,15 @@ $all = ($files | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
 if ($all -notmatch 'smoke smtp' -or $all -notmatch 'smoke pickup') { Fail "delivered messages have unexpected content" }
 if ($all -notmatch 'by smoke.example.test \(Promailer\)') { Fail "Received header missing" }
 Write-Host "Delivered: $($files.Name -join ', ')"
+
+Step "Message history"
+$deadline = (Get-Date).AddSeconds(15)
+do {
+    Start-Sleep -Seconds 1
+    $hist = @(Get-ChildItem (Join-Path $data 'history') -Filter *.jsonl -ErrorAction SilentlyContinue)
+    $events = ($hist | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
+} while ($events -notmatch '"kind":"sent"' -and (Get-Date) -lt $deadline)
+if ($events -notmatch '"kind":"sent"' -or $events -notmatch 'smoke smtp') { Fail "delivery events not recorded in history" }
 
 Step "Hot reload"
 & $exe service reload

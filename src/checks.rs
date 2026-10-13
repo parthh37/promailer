@@ -79,6 +79,31 @@ fn tag<'a>(record: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
+/// Compare the published DKIM TXT record at `name` with our public key bytes.
+pub async fn dkim_record_status(dns: &Dns, name: &str, ours: &[u8]) -> (Status, String) {
+    match dns.txt(name).await {
+        Ok(txts) => {
+            let rec = txts.join("");
+            let p = tag(&rec, "p").unwrap_or("");
+            if p.is_empty() {
+                return (Status::Fail, format!("{name} has no p= key (revoked?)"));
+            }
+            match base64::engine::general_purpose::STANDARD.decode(p.replace([' ', '\t'], "")) {
+                Ok(dns_key) if public_key_matches(&dns_key, ours) => {
+                    (Status::Pass, format!("{name} matches the configured private key"))
+                }
+                Ok(_) => (
+                    Status::Fail,
+                    format!("{name} does not match the configured private key; signatures will fail. Publish the record shown for this key"),
+                ),
+                Err(_) => (Status::Fail, format!("{name} p= is not valid base64")),
+            }
+        }
+        Err(DnsFailure::NotFound) => (Status::Fail, format!("No TXT record at {name}")),
+        Err(e) => (Status::Warn, format!("lookup of {name} failed: {e}")),
+    }
+}
+
 pub async fn run(dns: &Dns, cfg: &Config, dkim: &DkimRegistry, domain: &str, ips_override: &[IpAddr]) -> Report {
     let domain = domain.trim().trim_end_matches('.').to_lowercase();
     let mut ips: Vec<IpAddr> = if !ips_override.is_empty() {
@@ -221,34 +246,13 @@ pub async fn run(dns: &Dns, cfg: &Config, dkim: &DkimRegistry, domain: &str, ips
     let keys = dkim.public_keys(&domain);
     if keys.is_empty() {
         r.add("DKIM", Status::Fail, format!(
-            "No DKIM key configured for {domain}. Run `promailer dkim generate --domain {domain} --selector s1` and add a [[dkim]] section"
+            "No DKIM key configured for {domain}. Create one under DKIM Keys in Promailer Manager, or run `promailer dkim generate --domain {domain} --selector s1` and add a [[dkim]] section"
         ));
     }
     for (selector, ours) in keys {
-        let name = format!("{selector}._domainkey.{domain}");
-        match dns.txt(&name).await {
-            Ok(txts) => {
-                let rec = txts.join("");
-                let p = tag(&rec, "p").unwrap_or("");
-                if p.is_empty() {
-                    r.add(format!("DKIM {selector}"), Status::Fail, format!("{name} has no p= key (revoked?)"));
-                    continue;
-                }
-                match base64::engine::general_purpose::STANDARD.decode(p.replace([' ', '\t'], "")) {
-                    Ok(dns_key) if public_key_matches(&dns_key, &ours) => {
-                        r.add(format!("DKIM {selector}"), Status::Pass, format!("{name} matches the configured private key"))
-                    }
-                    Ok(_) => r.add(format!("DKIM {selector}"), Status::Fail, format!(
-                        "{name} does not match the configured private key; signatures will fail. Re-publish the record printed by `promailer dkim generate`"
-                    )),
-                    Err(_) => r.add(format!("DKIM {selector}"), Status::Fail, format!("{name} p= is not valid base64")),
-                }
-            }
-            Err(DnsFailure::NotFound) => {
-                r.add(format!("DKIM {selector}"), Status::Fail, format!("No TXT record at {name}"))
-            }
-            Err(e) => r.add(format!("DKIM {selector}"), Status::Warn, format!("lookup of {name} failed: {e}")),
-        }
+        let name = crate::dkim::dns_name(&domain, &selector);
+        let (status, detail) = dkim_record_status(dns, &name, &ours).await;
+        r.add(format!("DKIM {selector}"), status, detail);
     }
 
     // --- DMARC ---------------------------------------------------------------

@@ -8,6 +8,7 @@ mod checks;
 mod config;
 mod dkim;
 mod dns;
+mod events;
 mod logging;
 mod message;
 mod pickup;
