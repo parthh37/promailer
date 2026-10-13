@@ -179,32 +179,18 @@ Expect-Event 1012 $ec.Thumbprint | Out-Null
 Test-StartTls $ec.Thumbprint 'smoke tls ecdsa'
 Wait-Drop 4 | Out-Null
 
-Step "Legacy CryptoAPI key (informational)"
-# Certificates imported years ago often keep their key in a legacy CSP rather than CNG.
-try {
-    $csp = New-SelfSignedCertificate -DnsName 'smoke.example.test' -CertStoreLocation 'Cert:\LocalMachine\My' `
-        -KeyAlgorithm RSA -KeyLength 2048 -KeyExportPolicy NonExportable `
-        -Provider 'Microsoft Enhanced RSA and AES Cryptographic Provider' -FriendlyName 'Promailer smoke CSP'
-    $createdCerts += $csp
-    $saved = Get-Content $config -Raw
-    Set-Thumbprint $csp.Thumbprint
-    $out = (& $exe config check --config $config 2>&1) -join "`n"
-    Write-Host "config check exit $LASTEXITCODE`n$out"
-    if ($LASTEXITCODE -eq 0) {
-        & $exe service reload
-        Start-Sleep -Seconds 2
-        $env:EXPECT_THUMBPRINT = $csp.Thumbprint
-        'import smtplib,ssl,hashlib,os
-c=ssl.create_default_context(); c.check_hostname=False; c.verify_mode=ssl.CERT_NONE
-s=smtplib.SMTP("127.0.0.1",587,timeout=30); s.ehlo("x"); s.starttls(context=c)
-print("legacy CSP key:", s.sock.version(), hashlib.sha1(s.sock.getpeercert(True)).hexdigest().upper()==os.environ["EXPECT_THUMBPRINT"]); s.quit()' | python -
-        Write-Host "legacy CSP handshake exit code: $LASTEXITCODE"
-    }
-    Set-Content -Path $config -Value $saved -Encoding utf8NoBOM -NoNewline
-    & $exe service reload
-} catch {
-    Write-Host "legacy CSP check skipped: $_"
-}
+Step "Legacy CryptoAPI key"
+# Certificates imported years ago often keep their key in a legacy CSP rather than a CNG
+# key storage provider; CNG opens those keys too (TLS 1.3 / RSA-PSS included).
+$csp = New-SelfSignedCertificate -DnsName 'smoke.example.test' -CertStoreLocation 'Cert:\LocalMachine\My' `
+    -KeyAlgorithm RSA -KeyLength 2048 -KeyExportPolicy NonExportable `
+    -Provider 'Microsoft Enhanced RSA and AES Cryptographic Provider' -FriendlyName 'Promailer smoke CSP'
+$createdCerts += $csp
+Set-Thumbprint $csp.Thumbprint
+& $exe service reload
+Expect-Event 1012 $csp.Thumbprint | Out-Null
+Test-StartTls $csp.Thumbprint 'smoke tls csp'
+Wait-Drop 5 | Out-Null
 
 Step "Stopping service"
 & $exe service stop

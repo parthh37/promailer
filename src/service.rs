@@ -37,18 +37,20 @@ mod imp {
     }
 
     fn service_main(_args: Vec<OsString>) {
+        // Errors before the service could report its status (run_service handles the rest).
         if let Err(e) = run_service() {
-            // Logging may not be initialised if config loading failed; leave a breadcrumb
-            // and, unless the tracing layer already reported it, an Event Log entry.
-            let path = std::env::temp_dir().join("promailer-service-error.log");
-            let _ = std::fs::write(&path, format!("{}: {e:#}\n", chrono::Utc::now()));
-            if !eventlog::layer_active() {
-                eventlog::report(
-                    eventlog::Kind::Error,
-                    eventlog::id::FATAL,
-                    &format!("Promailer could not start: {e:#}"),
-                );
-            }
+            report_failure(&e);
+        }
+    }
+
+    /// Leave a breadcrumb file and, unless the tracing layer already logged the error
+    /// (e.g. the configuration could not be loaded), an Event Log entry. Must run before
+    /// SERVICE_STOPPED is reported: the SCM may end the process right after it.
+    fn report_failure(e: &anyhow::Error) {
+        let path = std::env::temp_dir().join("promailer-service-error.log");
+        let _ = std::fs::write(&path, format!("{}: {e:#}\n", chrono::Utc::now()));
+        if !eventlog::layer_active() {
+            eventlog::report(eventlog::Kind::Error, eventlog::id::FATAL, &format!("Promailer could not start: {e:#}"));
         }
     }
 
@@ -100,9 +102,12 @@ mod imp {
         set(ServiceState::StopPending, ServiceControlAccept::empty(), 0, Duration::from_secs(60));
         rt.shutdown_timeout(Duration::from_secs(10));
         drop(tx);
+        if let Err(e) = &res {
+            report_failure(e);
+        }
         // Non-zero exit code makes the SCM apply the configured recovery actions (restart).
         set(ServiceState::Stopped, ServiceControlAccept::empty(), if res.is_ok() { 0 } else { 1 }, Duration::default());
-        res
+        Ok(())
     }
 
     pub fn install(config: &Path, account: Option<String>, password: Option<String>) -> Result<()> {
