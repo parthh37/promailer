@@ -207,12 +207,50 @@ pub fn generate(domain: &str, selector: &str, alg: DkimAlgorithm, bits: usize) -
             (pem_encode("PRIVATE KEY", &der), key.public_key(), "ed25519")
         }
     };
-    let p64 = base64::engine::general_purpose::STANDARD.encode(p);
-    Ok(GeneratedKey {
-        private_pem,
-        dns_name: format!("{selector}._domainkey.{domain}"),
-        dns_value: format!("v=DKIM1; k={k}; p={p64}"),
-    })
+    Ok(GeneratedKey { private_pem, dns_name: dns_name(domain, selector), dns_value: dns_value(k, &p) })
+}
+
+pub fn dns_name(domain: &str, selector: &str) -> String {
+    format!("{selector}._domainkey.{domain}")
+}
+
+fn dns_value(k: &str, public: &[u8]) -> String {
+    format!("v=DKIM1; k={k}; p={}", base64::engine::general_purpose::STANDARD.encode(public))
+}
+
+/// Public key bytes (`p=`) for a configured key, read from its private key file:
+/// SubjectPublicKeyInfo DER for RSA (as `generate` publishes), raw 32 bytes for Ed25519.
+pub fn public_key_bytes(c: &DkimConfig) -> Result<Vec<u8>> {
+    match c.algorithm {
+        DkimAlgorithm::RsaSha256 => {
+            use rsa::pkcs1::DecodeRsaPrivateKey;
+            use rsa::pkcs8::{DecodePrivateKey, EncodePublicKey};
+            let pem = std::fs::read_to_string(&c.private_key)
+                .with_context(|| format!("reading DKIM key {}", c.private_key.display()))?;
+            let key = rsa::RsaPrivateKey::from_pkcs8_pem(&pem)
+                .or_else(|_| rsa::RsaPrivateKey::from_pkcs1_pem(&pem))
+                .with_context(|| format!("parsing RSA key {}", c.private_key.display()))?;
+            Ok(rsa::RsaPublicKey::from(&key).to_public_key_der().context("encoding public key")?.as_bytes().to_vec())
+        }
+        DkimAlgorithm::Ed25519Sha256 => {
+            let der = match load_private_key(&c.private_key)? {
+                PrivateKeyDer::Pkcs8(k) => k.secret_pkcs8_der().to_vec(),
+                _ => bail!("Ed25519 DKIM key {} must be PKCS#8", c.private_key.display()),
+            };
+            let k = Ed25519Key::from_pkcs8_maybe_unchecked_der(&der)
+                .map_err(|e| anyhow::anyhow!("DKIM Ed25519 key {}: {e}", c.private_key.display()))?;
+            Ok(k.public_key())
+        }
+    }
+}
+
+/// The TXT record (name, value) to publish for a configured key.
+pub fn dns_record(c: &DkimConfig) -> Result<(String, String)> {
+    let k = match c.algorithm {
+        DkimAlgorithm::RsaSha256 => "rsa",
+        DkimAlgorithm::Ed25519Sha256 => "ed25519",
+    };
+    Ok((dns_name(&c.domain, &c.selector), dns_value(k, &public_key_bytes(c)?)))
 }
 
 /// DNS `p=` may hold SubjectPublicKeyInfo (standard) or a bare PKCS#1 RSAPublicKey.
@@ -242,6 +280,26 @@ mod tests {
         }])
         .unwrap();
         (reg, g, dir)
+    }
+
+    #[test]
+    fn dns_record_rederived_from_key_file_matches_generated() {
+        for alg in [DkimAlgorithm::RsaSha256, DkimAlgorithm::Ed25519Sha256] {
+            let dir = tempfile::tempdir().unwrap();
+            let g = generate("example.com", "s1", alg, 2048).unwrap();
+            let path = dir.path().join("k.pem");
+            std::fs::write(&path, &g.private_pem).unwrap();
+            let c = DkimConfig {
+                domain: "example.com".into(),
+                selector: "s1".into(),
+                private_key: path,
+                algorithm: alg,
+                headers: default_dkim_headers(),
+                include_subdomains: false,
+                expire: None,
+            };
+            assert_eq!(dns_record(&c).unwrap(), (g.dns_name.clone(), g.dns_value.clone()));
+        }
     }
 
     #[test]

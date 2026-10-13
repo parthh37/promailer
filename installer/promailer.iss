@@ -9,6 +9,7 @@
 #define AppPublisher "Promailer"
 #define AppURL "https://github.com/parthh37/promailer"
 #define AppExe "promailer.exe"
+#define ManagerExe "promailer-manager.exe"
 
 [Setup]
 ; Never change AppId: it links upgrades to existing installations.
@@ -54,6 +55,7 @@ Name: "{commonappdata}\Promailer\certs"; Flags: uninsneveruninstall
 
 [Files]
 Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\{#ManagerExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\config\promailer.example.toml"; DestDir: "{app}"; Flags: ignoreversion
@@ -63,6 +65,7 @@ Source: "..\config\promailer.example.toml"; DestDir: "{commonappdata}\Promailer"
 Source: "..\config\promailer.example.toml"; DestDir: "{commonappdata}\Promailer"; DestName: "promailer.toml"; Flags: onlyifdoesntexist uninsneveruninstall
 
 [Icons]
+Name: "{autoprograms}\Promailer\Promailer Manager"; Filename: "{app}\{#ManagerExe}"; Comment: "Dashboard, queue, message search, live log, configuration and DNS checks"
 Name: "{autoprograms}\Promailer\Edit configuration"; Filename: "notepad.exe"; Parameters: """{commonappdata}\Promailer\promailer.toml"""
 Name: "{autoprograms}\Promailer\Data folder (queue, logs, badmail)"; Filename: "{commonappdata}\Promailer"
 Name: "{autoprograms}\Promailer\README"; Filename: "{app}\README.md"

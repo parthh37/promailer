@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Promailer Manager (new)
+- Native desktop GUI (`promailer-manager.exe`) installed with a Start-menu shortcut, laid out
+  like the IIS 6 SMTP manager: console tree, details pane and a virtual-server Properties sheet
+  (General, Access, Messages, Delivery) that edits only the settings you change.
+- Status (queue, throughput, bounce rate), queue browser with retry/delete, message search with
+  per-message timelines, live delivery log, Domains, DKIM key management, DNS check, and a
+  configuration file editor with validation.
+
+### Server
+- Message history: queue and delivery events recorded to `<data_dir>\history\*.jsonl` with
+  retention (`[history]` section).
+- New API endpoints: `stats/history`, `events`, `search`, `queue/{id}/headers`, `config` (get,
+  validate, save with backup, conflict detection and hot reload); `queue` accepts a `q` filter.
+- Queue entries record the decoded `Subject`.
+- DKIM key management API: list keys with their DNS record and publication status, generate keys
+  on the server (added to the configuration and hot-reloaded), remove keys.
+- `/health` reports the server host name.
+
 ## [0.1.0] - 2026-10-13
 
 First public release.

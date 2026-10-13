@@ -1,0 +1,27 @@
+[package]
+name = "promailer-manager"
+description = "Promailer Manager - native desktop GUI for the Promailer SMTP server"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "promailer-manager"
+path = "src/main.rs"
+
+[dependencies]
+# wgpu renderer: uses DX12 (with the WARP software fallback) on Windows, so the
+# GUI also works on GPU-less servers reached over Remote Desktop. glow (OpenGL)
+# is compiled in as a fallback if wgpu cannot start.
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "glow", "accesskit", "x11"] }
+egui = "0.36"
+egui_extras = "0.36"
+egui_plot = "0.37"
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+toml_edit = "0.22"
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["getrandom"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }

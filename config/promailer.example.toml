@@ -191,7 +191,16 @@ poll_interval = "2s"
 settle_time = "500ms"
 
 # -----------------------------------------------------------------------------
-# HTTP API (send mail, manage queue, stats, DNS checks)
+# Message history: queue/delivery events as JSON lines under <data_dir>\history,
+# used by message search and the live delivery log in Promailer Manager.
+# -----------------------------------------------------------------------------
+[history]
+enabled = true
+retention_days = 30
+memory_events = 10000             # recent events kept in memory for the live log
+
+# -----------------------------------------------------------------------------
+# HTTP API (send mail, manage queue, stats, DNS checks, Promailer Manager)
 #   promailer api-key generate --name webapp
 # -----------------------------------------------------------------------------
 [api]

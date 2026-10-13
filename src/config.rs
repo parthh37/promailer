@@ -56,6 +56,8 @@ pub struct Config {
     pub pickup: PickupConfig,
     #[serde(default)]
     pub api: ApiConfig,
+    #[serde(default)]
+    pub history: HistoryConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +675,28 @@ impl Default for ApiConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [history]
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct HistoryConfig {
+    /// Record queue/delivery events as JSON lines under `<data_dir>/history`,
+    /// searchable from the API and Promailer Manager.
+    pub enabled: bool,
+    /// Days of history files to keep.
+    pub retention_days: u32,
+    /// Recent events kept in memory for the live delivery log.
+    pub memory_events: usize,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self { enabled: true, retention_days: 30, memory_events: 10_000 }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ByteSize: accepts 1048576, "1048576", "512KB", "25MB", "1GB"
 // ---------------------------------------------------------------------------
 
@@ -726,12 +750,43 @@ impl<'de> Deserialize<'de> for ByteSize {
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading config file {}", path.display()))?;
-        let mut cfg: Config = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        Self::parse(&text, path).map_err(|e| match e {
+            ConfigError::Syntax(e) => anyhow::Error::new(e).context(format!("parsing {}", path.display())),
+            ConfigError::Invalid(e) => e,
+        })
+    }
+
+    /// Parse and validate config text as if it were stored at `path` (relative
+    /// paths resolve against its directory). Used by `load` and the config editor.
+    pub fn parse(text: &str, path: &Path) -> std::result::Result<Self, ConfigError> {
+        let mut cfg: Config = toml::from_str(text).map_err(ConfigError::Syntax)?;
         let base = path.parent().unwrap_or(Path::new("."));
         cfg.resolve_paths(base);
         cfg.normalize();
-        cfg.validate()?;
+        cfg.validate().map_err(ConfigError::Invalid)?;
         Ok(cfg)
+    }
+
+    /// Non-fatal problems worth showing to an administrator.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut w = Vec::new();
+        if !self.hostname_is_fqdn() {
+            w.push(format!(
+                "server.hostname '{}' is not a fully-qualified domain name; receivers may reject mail",
+                self.server.hostname
+            ));
+        }
+        if self.api.enabled && self.api.keys.is_empty() {
+            w.push("HTTP API enabled but no [[api.keys]] configured; only /health and /metrics are usable".into());
+        }
+        if self.api.enabled && self.api.allow.is_empty() {
+            w.push("api.allow is empty: the HTTP API accepts connections from any address".into());
+        }
+        w
+    }
+
+    fn hostname_is_fqdn(&self) -> bool {
+        !self.server.hostname.is_empty() && self.server.hostname.contains('.')
     }
 
     /// Make every relative path absolute so the service is independent of its
@@ -785,7 +840,7 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.server.hostname.is_empty() || !self.server.hostname.contains('.') {
+        if !self.hostname_is_fqdn() {
             tracing::warn!(
                 hostname = %self.server.hostname,
                 "server.hostname is not a fully-qualified domain name; receivers may reject mail"
@@ -890,6 +945,19 @@ impl Config {
     pub fn drop_dir(&self) -> PathBuf {
         self.server.data_dir.join("drop")
     }
+    pub fn history_dir(&self) -> PathBuf {
+        self.server.data_dir.join("history")
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// TOML syntax or schema error (carries a source span).
+    #[error(transparent)]
+    Syntax(toml::de::Error),
+    /// Semantic validation failure.
+    #[error("{0:#}")]
+    Invalid(anyhow::Error),
 }
 
 #[cfg(test)]

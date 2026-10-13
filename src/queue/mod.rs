@@ -5,6 +5,7 @@ pub mod dsn;
 pub mod store;
 
 use crate::app::App;
+use crate::events::{Event, EventKind};
 use crate::logging::DELIVERY_TARGET;
 use crate::message;
 use crate::stats::Stats;
@@ -92,6 +93,9 @@ pub struct QueueEntry {
     pub last_attempt: Option<DateTime<Utc>>,
     #[serde(default)]
     pub delay_notified: bool,
+    /// Decoded Subject header, for display and search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
 }
 
 impl QueueEntry {
@@ -100,6 +104,22 @@ impl QueueEntry {
     }
     pub fn pending(&self) -> impl Iterator<Item = &RecipientState> {
         self.recipients.iter().filter(|r| r.status == RcptStatus::Pending)
+    }
+
+    /// Start a lifecycle event for this message.
+    pub fn event(&self, kind: EventKind) -> Event {
+        let mut ev = Event::new(&self.id, kind, &self.sender);
+        ev.subject = self.subject.clone();
+        ev
+    }
+
+    /// Case-insensitive search over ID, sender, recipients and subject. `needle` must be lowercase.
+    pub fn matches(&self, needle: &str) -> bool {
+        let hit = |s: &str| s.to_lowercase().contains(needle);
+        hit(&self.id)
+            || hit(&self.sender)
+            || self.subject.as_deref().is_some_and(hit)
+            || self.recipients.iter().any(|r| hit(&r.address) || r.last_response.as_deref().is_some_and(hit))
     }
 }
 
@@ -281,10 +301,12 @@ pub async fn enqueue(app: &Arc<App>, msg: NewMessage) -> Result<String> {
 
     // CRLF normalisation, header completion and DKIM signing are CPU work on
     // potentially large buffers: keep them off the async executor threads.
-    let (data, signed_by) = tokio::task::spawn_blocking(move || {
+    let (data, signed_by, subject) = tokio::task::spawn_blocking(move || {
         let data = message::normalize_crlf(msg.data);
         let data = message::complete_headers(data, &hostname, from_fallback.as_deref());
-        dkim.sign(data)
+        let subject = message::subject(&data);
+        let (data, signed_by) = dkim.sign(data);
+        (data, signed_by, subject)
     })
     .await
     .context("message preparation task failed")?;
@@ -318,6 +340,7 @@ pub async fn enqueue(app: &Arc<App>, msg: NewMessage) -> Result<String> {
         next_attempt: now,
         last_attempt: None,
         delay_notified: false,
+        subject,
     };
 
     let q = app.queue.clone();
@@ -334,6 +357,10 @@ pub async fn enqueue(app: &Arc<App>, msg: NewMessage) -> Result<String> {
         source_label(&entry.source),
         if entry.dkim.is_empty() { "none".to_string() } else { entry.dkim.join(",") }
     );
+    let mut ev = entry.event(EventKind::Queued);
+    ev.to = Some(entry.recipients.iter().map(|r| r.address.as_str()).collect::<Vec<_>>().join(", "));
+    ev.detail = Some(format!("size={} source={}", entry.size, source_label(&entry.source)));
+    app.events.record(ev);
     app.queue.schedule(id, now);
     Ok(entry.id)
 }
@@ -451,6 +478,12 @@ async fn process(app: Arc<App>, id: Ulid) -> Result<()> {
             r.updated = Some(now);
             Stats::inc(&app.stats.recipients_bounced);
             info!(target: DELIVERY_TARGET, "{} to=<{}> status=expired detail=\"{}\"", entry.id, r.address, r.last_response.as_deref().unwrap_or(""));
+            let mut ev = Event::new(&entry.id, EventKind::Expired, &entry.sender);
+            ev.subject = entry.subject.clone();
+            ev.to = Some(r.address.clone());
+            ev.attempt = Some(r.attempts);
+            ev.detail = r.last_response.clone();
+            app.events.record(ev);
         }
     } else {
         attempt_delivery(&app, &mut entry, data.clone()).await;
@@ -549,10 +582,10 @@ async fn attempt_delivery(app: &Arc<App>, entry: &mut QueueEntry, data: Arc<Vec<
         };
         r.attempts += 1;
         r.updated = Some(now);
-        let (status, label) = match &outcome {
-            delivery::Outcome::Delivered { .. } => (RcptStatus::Delivered, "sent"),
-            delivery::Outcome::Permanent { .. } => (RcptStatus::Failed, "bounced"),
-            delivery::Outcome::Transient { .. } => (RcptStatus::Pending, "deferred"),
+        let (status, label, kind) = match &outcome {
+            delivery::Outcome::Delivered { .. } => (RcptStatus::Delivered, "sent", EventKind::Sent),
+            delivery::Outcome::Permanent { .. } => (RcptStatus::Failed, "bounced", EventKind::Bounced),
+            delivery::Outcome::Transient { .. } => (RcptStatus::Pending, "deferred", EventKind::Deferred),
         };
         let (host, response) = outcome.parts();
         r.status = status;
@@ -575,6 +608,13 @@ async fn attempt_delivery(app: &Arc<App>, entry: &mut QueueEntry, data: Arc<Vec<
             now.signed_duration_since(entry.created).num_seconds(),
             response.replace('"', "'")
         );
+        let mut ev = Event::new(&entry.id, kind, &entry.sender);
+        ev.subject = entry.subject.clone();
+        ev.to = Some(r.address.clone());
+        ev.relay = host;
+        ev.attempt = Some(r.attempts);
+        ev.detail = Some(response);
+        app.events.record(ev);
     }
 }
 
@@ -605,6 +645,10 @@ async fn finalize(app: &Arc<App>, entry: &QueueEntry, data: &[u8]) {
             Ok(ndr_id) => {
                 Stats::inc(&app.stats.ndr_generated);
                 info!(target: DELIVERY_TARGET, "{} ndr generated id={} to=<{}>", entry.id, ndr_id, entry.sender);
+                let mut ev = entry.event(EventKind::Ndr);
+                ev.to = Some(entry.sender.clone());
+                ev.detail = Some(format!("non-delivery report queued as {ndr_id}"));
+                app.events.record(ev);
             }
             Err(e) => {
                 error!(id = %entry.id, error = %e, "failed to generate NDR; moving to badmail");

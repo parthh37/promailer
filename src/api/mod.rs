@@ -7,6 +7,7 @@ use crate::access;
 use crate::app::App;
 use crate::auth::{constant_time_eq, sha256_hex};
 use crate::config::{ApiKeyConfig, ApiPermission};
+use crate::events::{EventKind, EventPage};
 use crate::message;
 use crate::queue::{NewMessage, QueueOpError, Source};
 use crate::stats::Stats;
@@ -14,7 +15,9 @@ use axum::body::Bytes;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
+
+mod admin;
 use axum::{Json, Router};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -82,9 +85,19 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/v1/queue/{id}", get(queue_get))
         .route("/api/v1/queue/{id}", delete(queue_delete))
         .route("/api/v1/queue/{id}/retry", post(queue_retry))
+        .route("/api/v1/queue/{id}/headers", get(queue_headers))
         .route("/api/v1/stats", get(stats))
+        .route("/api/v1/stats/history", get(stats_history))
+        .route("/api/v1/events", get(events))
+        .route("/api/v1/search", get(search))
         .route("/api/v1/check/{domain}", get(check_domain))
         .route("/api/v1/reload", post(reload))
+        .route("/api/v1/config", get(admin::config_get))
+        .route("/api/v1/config", put(admin::config_put))
+        .route("/api/v1/config/validate", post(admin::config_validate))
+        .route("/api/v1/dkim", get(admin::dkim_list))
+        .route("/api/v1/dkim", post(admin::dkim_create))
+        .route("/api/v1/dkim/{domain}/{selector}", delete(admin::dkim_delete))
         .layer(DefaultBodyLimit::max(limit))
         .with_state(app)
 }
@@ -108,11 +121,13 @@ async fn health(State(app): State<Arc<App>>) -> impl IntoResponse {
     Json(json!({
         "status": if app.is_shutting_down() { "stopping" } else { "ok" },
         "version": env!("CARGO_PKG_VERSION"),
+        // Already public in the SMTP banner; lets the manager label the server.
+        "hostname": app.cfg().server.hostname,
         "queue": app.queue.len(),
     }))
 }
 
-fn snapshot(app: &App) -> crate::stats::StatsSnapshot {
+pub fn snapshot(app: &App) -> crate::stats::StatsSnapshot {
     app.stats.snapshot(
         app.started.elapsed().as_secs(),
         app.connections.active(),
@@ -136,6 +151,109 @@ async fn stats(
 ) -> ApiResult<impl IntoResponse> {
     authorize(&app, &headers, peer, ApiPermission::Queue)?;
     Ok(Json(snapshot(&app)))
+}
+
+#[derive(Deserialize)]
+struct SinceQuery {
+    /// Unix seconds; only samples newer than this are returned.
+    #[serde(default)]
+    since: i64,
+}
+
+async fn stats_history(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(q): Query<SinceQuery>,
+) -> ApiResult<impl IntoResponse> {
+    authorize(&app, &headers, peer, ApiPermission::Queue)?;
+    Ok(Json(json!({
+        "interval_seconds": crate::stats::SAMPLE_INTERVAL_SECS,
+        "samples": app.stats_history.since(q.since),
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Events (live delivery log) and search
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct EventsQuery {
+    #[serde(default)]
+    after: u64,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
+async fn events(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(q): Query<EventsQuery>,
+) -> ApiResult<Json<EventPage>> {
+    authorize(&app, &headers, peer, ApiPermission::Queue)?;
+    Ok(Json(app.events.since(q.after, q.limit.clamp(1, 5000))))
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    /// Case-insensitive text matched against ID, addresses, subject and responses.
+    #[serde(default)]
+    q: String,
+    /// Restrict history to one event kind (sent, bounced, ...).
+    #[serde(default)]
+    kind: Option<String>,
+    /// Days of history to scan, counting today.
+    #[serde(default = "default_days")]
+    days: u32,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+fn default_days() -> u32 {
+    7
+}
+
+async fn search(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(q): Query<SearchQuery>,
+) -> ApiResult<impl IntoResponse> {
+    authorize(&app, &headers, peer, ApiPermission::Queue)?;
+    let kind = match q.kind.as_deref().map(str::trim).filter(|k| !k.is_empty() && *k != "all") {
+        Some(k) => Some(EventKind::parse(k).ok_or_else(|| bad(format!("unknown event kind '{k}'")))?),
+        None => None,
+    };
+    let needle = q.q.trim().to_lowercase();
+    let limit = q.limit.clamp(1, 2000);
+    let days = q.days.clamp(1, 366);
+    let app2 = app.clone();
+    let (queued, history, history_enabled) = tokio::task::spawn_blocking(move || {
+        let queued: Vec<_> = if kind.is_none() {
+            let store = &app2.queue.store;
+            store
+                .list_ids()
+                .iter()
+                .rev()
+                .filter_map(|id| store.load_meta(id).ok())
+                .filter(|m| m.matches(&needle))
+                .take(limit)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let pred = |e: &crate::events::Event| kind.is_none_or(|k| e.kind == k) && e.matches(&needle);
+        let cfg = app2.cfg();
+        let history = if cfg.history.enabled {
+            crate::events::search_files(&cfg.history_dir(), days, limit, pred)
+        } else {
+            app2.events.recent(limit, pred)
+        };
+        (queued, history, cfg.history.enabled)
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({ "queued": queued, "history": history, "history_enabled": history_enabled })))
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +567,9 @@ struct Page {
     limit: usize,
     #[serde(default)]
     offset: usize,
+    /// Optional case-insensitive filter (ID, sender, recipient, subject, last response).
+    #[serde(default)]
+    q: Option<String>,
 }
 fn default_limit() -> usize {
     100
@@ -463,12 +584,22 @@ async fn queue_list(
     authorize(&app, &headers, peer, ApiPermission::Queue)?;
     let q = app.queue.clone();
     let limit = page.limit.min(1000);
+    let needle = page.q.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
     let (total, items) = tokio::task::spawn_blocking(move || {
         let ids = q.store.list_ids();
-        let total = ids.len();
-        let items: Vec<_> =
-            ids.iter().skip(page.offset).take(limit).filter_map(|id| q.store.load_meta(id).ok()).collect();
-        (total, items)
+        match needle {
+            None => {
+                let items: Vec<_> =
+                    ids.iter().skip(page.offset).take(limit).filter_map(|id| q.store.load_meta(id).ok()).collect();
+                (ids.len(), items)
+            }
+            Some(n) => {
+                let all: Vec<_> =
+                    ids.iter().filter_map(|id| q.store.load_meta(id).ok()).filter(|m| m.matches(&n)).collect();
+                let total = all.len();
+                (total, all.into_iter().skip(page.offset).take(limit).collect())
+            }
+        }
     })
     .await
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -504,9 +635,36 @@ async fn queue_delete(
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     let key = authorize(&app, &headers, peer, ApiPermission::Queue)?;
+    let meta = ulid::Ulid::from_string(&id).ok().and_then(|_| app.queue.store.load_meta(&id).ok());
     app.queue.delete(&id).map_err(op_err)?;
     info!(%id, key = %key.name, "queue entry deleted via API");
+    if let Some(m) = meta {
+        let mut ev = m.event(EventKind::Deleted);
+        ev.to = Some(m.pending().map(|r| r.address.as_str()).collect::<Vec<_>>().join(", "));
+        ev.detail = Some(format!("deleted by administrator (API key '{}')", key.name));
+        app.events.record(ev);
+    }
     Ok(Json(json!({ "deleted": id })))
+}
+
+/// Header block of a queued message (up to 64 KB) for inspection.
+async fn queue_headers(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    authorize(&app, &headers, peer, ApiPermission::Queue)?;
+    if ulid::Ulid::from_string(&id).is_err() {
+        return Err(ApiError(StatusCode::NOT_FOUND, "not found".into()));
+    }
+    let q = app.queue.clone();
+    let data = tokio::task::spawn_blocking(move || q.store.load_data(&id))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|_| ApiError(StatusCode::NOT_FOUND, "not found".into()))?;
+    let end = message::header_end(&data).min(64 * 1024);
+    Ok(Json(json!({ "headers": String::from_utf8_lossy(&data[..end]), "size": data.len() })))
 }
 
 async fn queue_retry(

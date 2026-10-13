@@ -47,6 +47,14 @@ pub fn header_value(hdrs: &[(String, String)], name: &str) -> Option<String> {
     hdrs.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())
 }
 
+/// Decoded (RFC 2047) Subject header, truncated for display.
+pub fn subject(msg: &[u8]) -> Option<String> {
+    let block = &msg[..header_end(msg)];
+    let parsed = mail_parser::MessageParser::new().parse_headers(block)?;
+    let s = parsed.subject()?.trim();
+    (!s.is_empty()).then(|| s.chars().take(500).collect())
+}
+
 pub fn count_received(hdrs: &[(String, String)]) -> usize {
     hdrs.iter().filter(|(n, _)| n.eq_ignore_ascii_case("Received")).count()
 }
