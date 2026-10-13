@@ -117,11 +117,10 @@
         <Environment Id="Path" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" />
       </Component>
 
-      <Component Id="Docs">
-        <File Source="README.md" />
-        <File Source="CHANGELOG.md" />
-        <File Source="config\promailer.example.toml" />
-      </Component>
+      <!-- One generated component per file (unversioned files cannot share one). -->
+      <File Source="README.md" />
+      <File Source="CHANGELOG.md" />
+      <File Source="config\promailer.example.toml" />
     </ComponentGroup>
   </Fragment>
 
