@@ -103,6 +103,7 @@ if ($isMsi) {
 }
 if ($p.ExitCode -ne 0) { Fail "installer exit code $($p.ExitCode)" }
 if (-not (Test-Path $exe)) { Fail "promailer.exe not installed" }
+if (-not (Test-Path (Join-Path $app 'promailer-manager.exe'))) { Fail "promailer-manager.exe not installed" }
 if (-not (Test-Path $config)) { Fail "default configuration not created" }
 if (-not (Get-Service Promailer -ErrorAction SilentlyContinue)) { Fail "service not registered" }
 if ((Get-Service Promailer).Status -ne 'Stopped') { Fail "service started although it was asked not to" }
@@ -177,6 +178,15 @@ foreach ($s in 'smoke smtp', 'smoke pickup', 'smoke tls rsa') {
     if ($all -notmatch $s) { Fail "message '$s' not delivered" }
 }
 if ($all -notmatch 'by smoke.example.test \(Promailer\)') { Fail "Received header missing" }
+
+Step "Message history"
+$deadline = (Get-Date).AddSeconds(15)
+do {
+    Start-Sleep -Seconds 1
+    $hist = @(Get-ChildItem (Join-Path $data 'history') -Filter *.jsonl -ErrorAction SilentlyContinue)
+    $events = ($hist | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
+} while ($events -notmatch '"kind":"sent"' -and (Get-Date) -lt $deadline)
+if ($events -notmatch '"kind":"sent"' -or $events -notmatch 'smoke smtp') { Fail "delivery events not recorded in history" }
 
 Step "Hot reload to an ECDSA certificate"
 Set-Thumbprint $ec.Thumbprint

@@ -37,10 +37,10 @@ jobs:
           "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Test
-        run: cargo test --release --locked
+        run: cargo test --workspace --release --locked
 
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --workspace --release --locked
 
       # Code signing switches on once the SIGNING_CERT_PFX_BASE64 secret exists (plus
       # SIGNING_CERT_PASSWORD; optional variable SIGNING_TIMESTAMP_URL). Until then builds are unsigned.
@@ -54,14 +54,14 @@ jobs:
           "enabled=$($enabled.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           if (-not $enabled) { Write-Host "::warning::Code signing is not configured (secret SIGNING_CERT_PFX_BASE64); binaries are unsigned." }
 
-      - name: Sign promailer.exe
+      - name: Sign executables
         if: steps.signing.outputs.enabled == 'true'
         shell: pwsh
         env:
           SIGNING_CERT_PFX_BASE64: ${{ secrets.SIGNING_CERT_PFX_BASE64 }}
           SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
           SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
-        run: .\scripts\sign.ps1 target\release\promailer.exe
+        run: .\scripts\sign.ps1 target\release\promailer.exe target\release\promailer-manager.exe
 
       - name: Build installer
         shell: pwsh
@@ -107,7 +107,7 @@ jobs:
         run: |
           $stage = "dist\Promailer-$env:VERSION-x64-portable"
           New-Item -ItemType Directory -Force $stage | Out-Null
-          Copy-Item target\release\promailer.exe, README.md, CHANGELOG.md, config\promailer.example.toml $stage
+          Copy-Item target\release\promailer.exe, target\release\promailer-manager.exe, README.md, CHANGELOG.md, config\promailer.example.toml $stage
           Compress-Archive -Path "$stage\*" -DestinationPath "$stage.zip" -Force
           Remove-Item -Recurse $stage
 
@@ -142,7 +142,7 @@ jobs:
           $m = [regex]::Match($log, "(?ms)^## \[$([regex]::Escape($env:VERSION))\][^\n]*\n(.*?)(?=^## \[|\z)")
           if (-not $m.Success) { throw "CHANGELOG.md has no section for $env:VERSION" }
           $notes = $m.Groups[1].Value.Trim()
-          $notes += "`n`n### Downloads`n- **Promailer-$env:VERSION-x64-Setup.exe** - installer (Windows service, default config, PATH)`n- **Promailer-$env:VERSION-x64.msi** - MSI for Group Policy / SCCM / Intune (``msiexec /i ... /qn HOSTNAME=mail.example.com``)`n- **Promailer-$env:VERSION-x64-portable.zip** - standalone executable`n- **SHA256SUMS.txt** - checksums"
+          $notes += "`n`n### Downloads`n- **Promailer-$env:VERSION-x64-Setup.exe** - installer (Windows service, Promailer Manager GUI, default config, PATH)`n- **Promailer-$env:VERSION-x64.msi** - MSI for Group Policy / SCCM / Intune (``msiexec /i ... /qn HOSTNAME=mail.example.com``)`n- **Promailer-$env:VERSION-x64-portable.zip** - standalone executables (service + manager GUI)`n- **SHA256SUMS.txt** - checksums"
           if ($env:SIGNING -ne 'true') { $notes += "`n`nBinaries in this release are not code-signed." }
           Set-Content release-notes.md $notes -Encoding utf8
 

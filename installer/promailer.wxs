@@ -45,6 +45,9 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Promailer" />
     </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="MENUFOLDER" Name="Promailer" />
+    </StandardDirectory>
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="DATAFOLDER" Name="Promailer">
         <Directory Id="DKIMFOLDER" Name="dkim" />
@@ -115,6 +118,16 @@
         <!-- Also tells Setup.exe that the MSI owns this machine's installation. -->
         <RegistryValue Root="HKLM" Key="SOFTWARE\Promailer" Name="InstalledByMsi" Type="string" Value="$(var.Version)" KeyPath="yes" />
         <Environment Id="Path" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" />
+      </Component>
+
+      <File Id="PromailerManagerExe" Source="target\release\promailer-manager.exe" />
+      <Component Id="ManagerShortcut" Directory="MENUFOLDER">
+        <Shortcut Id="ManagerStartMenu" Name="Promailer Manager"
+                  Description="Dashboard, queue, message search, live log, configuration and DNS checks"
+                  Target="[#PromailerManagerExe]" WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveMenuFolder" On="uninstall" />
+        <!-- Non-advertised shortcuts need a registry key path (ICE43). -->
+        <RegistryValue Root="HKCU" Key="Software\Promailer" Name="ManagerShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
 
       <!-- One generated component per file (unversioned files cannot share one). -->

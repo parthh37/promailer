@@ -11,6 +11,7 @@ mod dkim;
 mod dns;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod eventlog;
+mod events;
 mod logging;
 mod message;
 mod pickup;
