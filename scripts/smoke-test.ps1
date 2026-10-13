@@ -219,3 +219,6 @@ if (Test-Path $sourceKey) { Fail "Event Log source still registered after uninst
 $createdCerts | ForEach-Object { Remove-Item "Cert:\LocalMachine\My\$($_.Thumbprint)" -DeleteKey -ErrorAction SilentlyContinue }
 
 Write-Host "`nSMOKE TEST PASSED ($([IO.Path]::GetFileName($Installer)))" -ForegroundColor Green
+# Explicit: the Actions pwsh wrapper would otherwise exit with the last native exit code
+# (the deliberately failed `service start` above).
+exit 0
