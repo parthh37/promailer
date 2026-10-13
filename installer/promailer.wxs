@@ -64,8 +64,15 @@
                   Execute="deferred"
                   Impersonate="no"
                   Return="check" />
+    <CustomAction Id="ConfigureService"
+                  FileRef="PromailerExe"
+                  ExeCommand="service configure"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
     <InstallExecuteSequence>
       <Custom Action="CreateConfig" After="InstallFiles" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="ConfigureService" After="InstallServices" Condition="NOT REMOVE~=&quot;ALL&quot;" />
     </InstallExecuteSequence>
   </Package>
 
@@ -83,16 +90,9 @@
                         Arguments="service run --config &quot;[DATAFOLDER]promailer.toml&quot;">
           <ServiceDependency Id="Tcpip" />
           <ServiceDependency Id="Dnscache" />
-          <!-- Same settings as `promailer service install`. -->
-          <ServiceConfig DelayedAutoStart="yes"
-                         FailureActionsWhen="failedToStopOrReturnedError"
-                         PreShutdownDelay="60000"
-                         OnInstall="yes" OnReinstall="yes" />
-          <ServiceConfigFailureActions ResetPeriod="86400" OnInstall="yes" OnReinstall="yes">
-            <Failure Action="restartService" Delay="5000" />
-            <Failure Action="restartService" Delay="30000" />
-            <Failure Action="restartService" Delay="60000" />
-          </ServiceConfigFailureActions>
+          <!-- Delayed start and recovery actions are applied by the ConfigureService custom action
+               (same code as `promailer service install`): the MsiServiceConfigFailureActions table
+               fails with access denied for restart actions. -->
         </ServiceInstall>
         <ServiceControl Id="StopPromailer" Name="Promailer" Stop="both" Remove="uninstall" Wait="yes" />
       </Component>

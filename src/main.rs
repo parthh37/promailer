@@ -132,6 +132,9 @@ enum ServiceCmd {
     Stop,
     /// Ask the running service to reload its configuration.
     Reload,
+    /// Apply recovery and start-up settings to an installed service (used by the MSI).
+    #[command(hide = true)]
+    Configure,
     /// Entry point used by the Service Control Manager.
     #[command(hide = true)]
     Run {
@@ -247,6 +250,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             ServiceCmd::Start => service::start(),
             ServiceCmd::Stop => service::stop(),
             ServiceCmd::Reload => service::reload(),
+            ServiceCmd::Configure => service::configure(),
             ServiceCmd::Run { config } => service::run_dispatcher(config),
         },
         Cmd::Config { action } => match action {
