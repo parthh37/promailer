@@ -69,6 +69,9 @@ pub fn thumbprint(der: &[u8]) -> String {
 }
 
 /// Outcome of checking a certificate's validity window.
+// TEMPORARY: `Warn`/`Reject` are unused until `assess_validity` implements a policy.
+// Remove this allow together with the placeholder.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CertHealth {
     /// Nothing to report.
@@ -83,8 +86,11 @@ pub enum CertHealth {
 /// Policy for a certificate's validity window. Called when the certificate is loaded
 /// (start-up, reload, renewal pick-up) and once a day while it is in use.
 pub fn assess_validity(not_before: DateTime<Utc>, not_after: DateTime<Utc>, now: DateTime<Utc>) -> CertHealth {
-    // TODO(policy): decide how Promailer treats expired, not-yet-valid and soon-to-expire
-    // certificates. See the request in the conversation for the trade-offs.
+    // TODO(policy): placeholder that accepts every certificate. Decide how to treat
+    // - expired certificates: Reject (strict, but the whole service, including plain port-25
+    //   relay, fails to start) or Warn (mail keeps flowing; clients that verify certificates fail);
+    // - not-yet-valid certificates (usually a clock problem);
+    // - how many days before expiry to Warn (auto-renewed certs typically renew at 30 days left).
     let _ = (not_before, not_after, now);
     CertHealth::Healthy
 }
