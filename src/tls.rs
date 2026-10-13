@@ -1,9 +1,13 @@
 //! TLS configuration (rustls, ring backend) and a stream type that can be
 //! upgraded in place for STARTTLS on both the server and client side.
 
+use crate::config::{TlsConfig, TlsSource};
 use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Utc};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::sign::{CertifiedKey, SingleCertAndKey};
 use rustls::{ClientConfig, DigitallySignedStruct, ServerConfig, SignatureScheme};
 use std::io;
 use std::path::Path;
@@ -14,11 +18,102 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-pub fn load_server_config(cert: &Path, key: &Path) -> Result<Arc<ServerConfig>> {
+/// A loaded server certificate: the rustls configuration plus details for logs and checks.
+pub struct ServerCert {
+    pub config: Arc<ServerConfig>,
+    pub info: CertInfo,
+}
+
+/// Identity and validity of the leaf certificate, whatever its source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertInfo {
+    /// File path, or `LocalMachine\<store>` for the Windows certificate store.
+    pub source: String,
+    /// SHA-1 thumbprint in upper-case hex, the form certlm.msc and PowerShell display.
+    pub thumbprint: String,
+    pub subject: String,
+    pub not_before: DateTime<Utc>,
+    pub not_after: DateTime<Utc>,
+}
+
+impl CertInfo {
+    pub fn parse(der: &[u8], source: String) -> Result<Self> {
+        use x509_cert::der::Decode;
+        let cert = x509_cert::Certificate::from_der(der).context("parsing X.509 certificate")?;
+        let tbs = &cert.tbs_certificate;
+        let time = |t: &x509_cert::time::Time| {
+            DateTime::from_timestamp(t.to_unix_duration().as_secs() as i64, 0).unwrap_or_default()
+        };
+        Ok(Self {
+            source,
+            thumbprint: thumbprint(der),
+            subject: tbs.subject.to_string(),
+            not_before: time(&tbs.validity.not_before),
+            not_after: time(&tbs.validity.not_after),
+        })
+    }
+
+    pub fn health(&self, now: DateTime<Utc>) -> CertHealth {
+        assess_validity(self.not_before, self.not_after, now)
+    }
+}
+
+/// SHA-1 over the DER encoding: what Windows calls the certificate thumbprint.
+pub fn thumbprint(der: &[u8]) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, der);
+    digest.as_ref().iter().map(|b| format!("{b:02X}")).collect()
+}
+
+/// Outcome of checking a certificate's validity window.
+// TEMPORARY: `Warn`/`Reject` are unused until `assess_validity` implements a policy.
+// Remove this allow together with the placeholder.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertHealth {
+    /// Nothing to report.
+    Healthy,
+    /// Keep using the certificate but raise a warning (Event Log ID 1010).
+    Warn(String),
+    /// Refuse the certificate when loading it: start-up fails, or a reload keeps the
+    /// previous certificate. If it is already in use, raise an error (Event Log ID 1011).
+    Reject(String),
+}
+
+/// Policy for a certificate's validity window. Called when the certificate is loaded
+/// (start-up, reload, renewal pick-up) and once a day while it is in use.
+pub fn assess_validity(not_before: DateTime<Utc>, not_after: DateTime<Utc>, now: DateTime<Utc>) -> CertHealth {
+    // TODO(policy): placeholder that accepts every certificate. Decide how to treat
+    // - expired certificates: Reject (strict, but the whole service, including plain port-25
+    //   relay, fails to start) or Warn (mail keeps flowing; clients that verify certificates fail);
+    // - not-yet-valid certificates (usually a clock problem);
+    // - how many days before expiry to Warn (auto-renewed certs typically renew at 30 days left).
+    let _ = (not_before, not_after, now);
+    CertHealth::Healthy
+}
+
+/// Load the configured server certificate from PEM files or the Windows certificate store.
+pub fn load_server(cfg: &TlsConfig) -> Result<ServerCert> {
+    let provider = provider();
+    let (certified, source) = match cfg.source()? {
+        TlsSource::Files { cert, key } => (load_pem(cert, key, &provider)?, cert.display().to_string()),
+        TlsSource::Store { store, thumbprint } => {
+            let (chain, key) = crate::certstore::load(store, thumbprint)?;
+            (CertifiedKey::new(chain, key), format!("LocalMachine\\{store}"))
+        }
+    };
+    let info = CertInfo::parse(certified.end_entity_cert()?, source)?;
+    let config = ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()?
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(SingleCertAndKey::from(certified)));
+    Ok(ServerCert { config: Arc::new(config), info })
+}
+
+fn load_pem(cert: &Path, key: &Path, provider: &CryptoProvider) -> Result<CertifiedKey> {
     let certs: Vec<CertificateDer<'static>> = {
         let data = std::fs::read(cert).with_context(|| format!("reading {}", cert.display()))?;
         rustls_pemfile::certs(&mut data.as_slice())
@@ -34,12 +129,7 @@ pub fn load_server_config(cert: &Path, key: &Path) -> Result<Arc<ServerConfig>> 
             .with_context(|| format!("parsing private key in {}", key.display()))?
             .with_context(|| format!("no private key found in {}", key.display()))?
     };
-    let cfg = ServerConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()?
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .context("certificate and key do not match")?;
-    Ok(Arc::new(cfg))
+    CertifiedKey::from_der(certs, key, provider).context("certificate and key do not match")
 }
 
 pub fn acceptor(cfg: Arc<ServerConfig>) -> TlsAcceptor {

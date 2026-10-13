@@ -4,10 +4,13 @@ mod access;
 mod api;
 mod app;
 mod auth;
+mod certstore;
 mod checks;
 mod config;
 mod dkim;
 mod dns;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod eventlog;
 mod events;
 mod logging;
 mod message;
@@ -96,6 +99,21 @@ enum Cmd {
         #[command(subcommand)]
         action: QueueCmd,
     },
+    /// Windows certificate store helpers.
+    Cert {
+        #[command(subcommand)]
+        action: CertCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum CertCmd {
+    /// List certificates in LocalMachine\<store> with the thumbprints [tls] thumbprint expects.
+    List {
+        /// Store name, e.g. My (Personal) or WebHosting.
+        #[arg(long, default_value = "My")]
+        store: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -115,6 +133,9 @@ enum ServiceCmd {
     Stop,
     /// Ask the running service to reload its configuration.
     Reload,
+    /// Apply recovery and start-up settings to an installed service (used by the MSI).
+    #[command(hide = true)]
+    Configure,
     /// Entry point used by the Service Control Manager.
     #[command(hide = true)]
     Run {
@@ -136,6 +157,12 @@ enum ConfigCmd {
         output: PathBuf,
         #[arg(long)]
         force: bool,
+        /// Leave an existing file untouched and succeed (used by the MSI).
+        #[arg(long, conflicts_with = "force")]
+        keep_existing: bool,
+        /// Server host name to write into the new configuration.
+        #[arg(long)]
+        hostname: Option<String>,
     },
 }
 
@@ -224,6 +251,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             ServiceCmd::Start => service::start(),
             ServiceCmd::Stop => service::stop(),
             ServiceCmd::Reload => service::reload(),
+            ServiceCmd::Configure => service::configure(),
             ServiceCmd::Run { config } => service::run_dispatcher(config),
         },
         Cmd::Config { action } => match action {
@@ -231,11 +259,18 @@ fn dispatch(cli: Cli) -> Result<()> {
                 logging::init_cli();
                 let cfg = config::Config::load(&config)?;
                 dkim::DkimRegistry::load(&cfg.dkim)?;
-                if let Some(t) = &cfg.tls {
-                    tls::load_server_config(&t.cert, &t.key)?;
-                }
+                let cert = app::load_tls(&cfg)?;
                 println!("Configuration OK: {}", config.display());
                 println!("  hostname     : {}", cfg.server.hostname);
+                if let Some(c) = cert.map(|c| c.info) {
+                    println!("  tls cert     : {} ({})", c.subject, c.source);
+                    println!("  thumbprint   : {}", c.thumbprint);
+                    println!(
+                        "  valid        : {} to {}",
+                        c.not_before.format("%Y-%m-%d"),
+                        c.not_after.format("%Y-%m-%d")
+                    );
+                }
                 println!("  data_dir     : {}", cfg.server.data_dir.display());
                 for l in &cfg.listeners {
                     println!(
@@ -254,14 +289,21 @@ fn dispatch(cli: Cli) -> Result<()> {
                 );
                 Ok(())
             }
-            ConfigCmd::Init { output, force } => {
-                if output.exists() && !force {
-                    anyhow::bail!("{} already exists (use --force to overwrite)", output.display());
+            ConfigCmd::Init { output, force, keep_existing, hostname } => {
+                if output.exists() {
+                    if keep_existing {
+                        println!("{} already exists; left unchanged", output.display());
+                        return Ok(());
+                    }
+                    if !force {
+                        anyhow::bail!("{} already exists (use --force to overwrite)", output.display());
+                    }
                 }
+                let text = example_config(hostname.as_deref())?;
                 if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
                     std::fs::create_dir_all(parent)?;
                 }
-                std::fs::write(&output, EXAMPLE_CONFIG)?;
+                std::fs::write(&output, text)?;
                 println!("Wrote {}", output.display());
                 Ok(())
             }
@@ -351,6 +393,34 @@ fn dispatch(cli: Cli) -> Result<()> {
             );
             Ok(())
         }
+        Cmd::Cert { action: CertCmd::List { store } } => {
+            let now = chrono::Utc::now();
+            let mut certs = certstore::list(&store)?;
+            certs.sort_by_key(|c| std::cmp::Reverse(c.info.not_after));
+            println!("{:<40}  {:<10}  {:<13}  {:<3}  subject", "thumbprint", "expires", "status", "key");
+            for c in &certs {
+                let status = if c.archived {
+                    "archived"
+                } else if c.info.not_after < now {
+                    "expired"
+                } else if c.info.not_before > now {
+                    "not yet valid"
+                } else {
+                    "valid"
+                };
+                println!(
+                    "{:<40}  {:<10}  {:<13}  {:<3}  {}",
+                    c.info.thumbprint,
+                    c.info.not_after.format("%Y-%m-%d"),
+                    status,
+                    if c.has_key { "yes" } else { "no" },
+                    c.info.subject
+                );
+            }
+            println!("\n{} certificate(s) in LocalMachine\\{store}", certs.len());
+            println!("Use one with a private key (key = yes) in promailer.toml:  [tls] thumbprint = \"...\"");
+            Ok(())
+        }
         Cmd::Queue { action } => {
             let (config, id) = match action {
                 QueueCmd::List { config } => (config, None),
@@ -386,5 +456,32 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+/// The example configuration, optionally with `server.hostname` filled in.
+fn example_config(hostname: Option<&str>) -> Result<String> {
+    const PLACEHOLDER: &str = "hostname = \"mail.example.com\"";
+    let Some(host) = hostname.map(|h| h.trim().to_lowercase()).filter(|h| !h.is_empty()) else {
+        return Ok(EXAMPLE_CONFIG.to_string());
+    };
+    if !host.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
+        anyhow::bail!("invalid host name '{host}'");
+    }
+    Ok(EXAMPLE_CONFIG.replacen(PLACEHOLDER, &format!("hostname = \"{host}\""), 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn example_config_hostname_is_personalised() {
+        let text = example_config(Some(" Mail.Contoso.COM ")).unwrap();
+        let cfg: config::Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.server.hostname, "mail.contoso.com");
+        assert_eq!(example_config(None).unwrap(), EXAMPLE_CONFIG);
+        assert_eq!(example_config(Some("")).unwrap(), EXAMPLE_CONFIG);
+        assert!(example_config(Some("evil\"\n[api]")).is_err());
     }
 }

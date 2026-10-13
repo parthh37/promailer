@@ -33,6 +33,7 @@ max_files = 30            # rotated files kept per log stream
 protocol_log = true       # smtp.*.log  - SMTP transcript (IIS "Enable logging")
 delivery_log = true       # delivery.*.log - one line per delivery attempt
 console = true            # also log to the console in `promailer run`
+event_log = true          # Windows Application log, source "Promailer" (service mode)
 
 # -----------------------------------------------------------------------------
 # Listeners  (IIS: General > IP address / TCP port)
@@ -60,9 +61,18 @@ require_auth = false
 # tls = "implicit"
 # require_auth = true
 
+# Server certificate, either from the Windows certificate store (LocalMachine)...
+#   find the thumbprint with `promailer cert list` (or certlm.msc > Personal > Certificates)
+# [tls]
+# thumbprint = "3A1F00B2C4D5E6F708192A3B4C5D6E7F8091A2B3"
+# store = "My"                     # My (Personal, default) or WebHosting
+#
+# ...or from PEM files:
 # [tls]
 # cert = 'certs\fullchain.pem'     # PEM chain, leaf first (e.g. from win-acme / certbot)
 # key  = 'certs\privkey.pem'
+#
+# Renewed certificates (win-acme, AD CS auto-enrollment) are picked up hourly without a restart.
 
 # -----------------------------------------------------------------------------
 # Limits  (IIS: General > Limit connections, Messages tab)

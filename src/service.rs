@@ -6,12 +6,14 @@ pub const DESCRIPTION: &str = "High-performance outbound SMTP server with DKIM, 
 #[cfg(windows)]
 mod imp {
     use super::*;
+    use crate::eventlog;
     use crate::server::{self, Control};
     use anyhow::{Context, Result};
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
     use std::sync::OnceLock;
     use std::time::Duration;
+    use windows_service::service::Service;
     use windows_service::service::{
         ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept, ServiceDependency,
         ServiceErrorControl, ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo,
@@ -36,10 +38,20 @@ mod imp {
     }
 
     fn service_main(_args: Vec<OsString>) {
+        // Errors before the service could report its status (run_service handles the rest).
         if let Err(e) = run_service() {
-            // Logging may not be initialised if config loading failed; leave a breadcrumb.
-            let path = std::env::temp_dir().join("promailer-service-error.log");
-            let _ = std::fs::write(&path, format!("{}: {e:#}\n", chrono::Utc::now()));
+            report_failure(&e);
+        }
+    }
+
+    /// Leave a breadcrumb file and, unless the tracing layer already logged the error
+    /// (e.g. the configuration could not be loaded), an Event Log entry. Must run before
+    /// SERVICE_STOPPED is reported: the SCM may end the process right after it.
+    fn report_failure(e: &anyhow::Error) {
+        let path = std::env::temp_dir().join("promailer-service-error.log");
+        let _ = std::fs::write(&path, format!("{}: {e:#}\n", chrono::Utc::now()));
+        if !eventlog::layer_active() {
+            eventlog::report(eventlog::Kind::Error, eventlog::id::FATAL, &format!("Promailer could not start: {e:#}"));
         }
     }
 
@@ -91,9 +103,12 @@ mod imp {
         set(ServiceState::StopPending, ServiceControlAccept::empty(), 0, Duration::from_secs(60));
         rt.shutdown_timeout(Duration::from_secs(10));
         drop(tx);
+        if let Err(e) = &res {
+            report_failure(e);
+        }
         // Non-zero exit code makes the SCM apply the configured recovery actions (restart).
         set(ServiceState::Stopped, ServiceControlAccept::empty(), if res.is_ok() { 0 } else { 1 }, Duration::default());
-        res
+        Ok(())
     }
 
     pub fn install(config: &Path, account: Option<String>, password: Option<String>) -> Result<()> {
@@ -127,6 +142,19 @@ mod imp {
         let svc = manager
             .create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)
             .context("creating service (already installed? use `promailer service uninstall` first)")?;
+        apply_settings(&svc)?;
+        if let Err(e) = eventlog::register_source(&std::env::current_exe()?) {
+            eprintln!("warning: Event Log source not registered ({e:#}); events will show without descriptions");
+        }
+        println!("Service '{SERVICE_NAME}' installed (config: {}).", config.display());
+        println!("Start it with: promailer service start");
+        Ok(())
+    }
+
+    /// Settings applied after the service exists. Shared by `install` and by the MSI, whose
+    /// own failure-action table cannot set restart actions (it opens the service without
+    /// SERVICE_START access, which ChangeServiceConfig2 requires for SC_ACTION_RESTART).
+    fn apply_settings(svc: &Service) -> Result<()> {
         svc.set_description(DESCRIPTION)?;
         let _ = svc.set_delayed_auto_start(true);
         let _ = svc.set_preshutdown_timeout(Duration::from_secs(60));
@@ -141,9 +169,20 @@ mod imp {
                 ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::from_secs(60) },
             ]),
         })?;
+        // Also restart after a fatal error, which the service reports as a non-zero exit code.
         svc.set_failure_actions_on_non_crash_failures(true)?;
-        println!("Service '{SERVICE_NAME}' installed (config: {}).", config.display());
-        println!("Start it with: promailer service start");
+        Ok(())
+    }
+
+    /// Apply description, delayed start and recovery settings to an existing service.
+    pub fn configure() -> Result<()> {
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .context("cannot open Service Control Manager (run as Administrator)")?;
+        let svc = manager
+            .open_service(SERVICE_NAME, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)
+            .context("service not installed")?;
+        apply_settings(&svc)?;
+        println!("Service '{SERVICE_NAME}' configured.");
         Ok(())
     }
 
@@ -162,6 +201,9 @@ mod imp {
             }
         }
         svc.delete()?;
+        if let Err(e) = eventlog::unregister_source() {
+            eprintln!("warning: {e:#}");
+        }
         println!("Service '{SERVICE_NAME}' removed. Queue and logs were kept.");
         Ok(())
     }
@@ -222,6 +264,9 @@ mod imp {
         bail!(MSG)
     }
     pub fn uninstall() -> Result<()> {
+        bail!(MSG)
+    }
+    pub fn configure() -> Result<()> {
         bail!(MSG)
     }
     pub fn start() -> Result<()> {
