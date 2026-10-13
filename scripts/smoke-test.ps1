@@ -23,10 +23,16 @@ function Fail($msg) {
     }
     $svcErr = Join-Path $env:TEMP 'promailer-service-error.log'
     if (Test-Path $svcErr) { Get-Content $svcErr }
-    Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Promailer'; StartTime = $started } -ErrorAction SilentlyContinue |
-        Format-List TimeCreated, Id, LevelDisplayName, Message | Out-String | Write-Host
+    try {
+        Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Promailer'; StartTime = $started } -ErrorAction Stop |
+            Format-List TimeCreated, Id, LevelDisplayName, Message | Out-String | Write-Host
+    } catch { Write-Host "(no Promailer events: $_)" }
     foreach ($log in 'install.log', 'msi-install.log', 'msi-uninstall.log') {
-        if (Test-Path $log) { Write-Host "--- $log"; Get-Content $log -Tail 80 }
+        if (-not (Test-Path $log)) { continue }
+        Write-Host "--- $log"
+        # In MSI logs the action that failed is the one followed by "Return value 3".
+        Select-String -Path $log -Pattern 'Return value 3' -Context 40, 3 | Select-Object -First 1 | Out-String | Write-Host
+        Get-Content $log -Tail 60
     }
     exit 1
 }
@@ -35,7 +41,8 @@ function Fail($msg) {
 function Expect-Event([int]$Id, [string]$Pattern) {
     $deadline = (Get-Date).AddSeconds(20)
     do {
-        $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Promailer'; Id = $Id; StartTime = $started } -ErrorAction SilentlyContinue)
+        # Get-WinEvent throws (even with SilentlyContinue) when nothing matches or the source is missing.
+        $events = @(try { Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Promailer'; Id = $Id; StartTime = $started } -ErrorAction Stop } catch { })
         $match = $events | Where-Object { $_.Message -match $Pattern } | Select-Object -First 1
         if ($match) { Write-Host "Event $Id ok: $(($match.Message -split "`n")[0])"; return $match }
         Start-Sleep -Seconds 1
