@@ -92,14 +92,21 @@ mod imp {
         set(ServiceState::StartPending, ServiceControlAccept::empty(), 0, Duration::from_secs(120));
 
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("promailer").build()?;
-        let res = rt.block_on(server::run(&config, false, rx, || {
-            set(
-                ServiceState::Running,
-                ServiceControlAccept::STOP | ServiceControlAccept::PRESHUTDOWN | ServiceControlAccept::PARAM_CHANGE,
-                0,
-                Duration::default(),
-            );
-        }));
+        // A panic must not unwind into the SCM's callback (that aborts the process without
+        // a status report); turn it into an error so the failure is reported and restarted.
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(server::run(&config, false, rx, || {
+                set(
+                    ServiceState::Running,
+                    ServiceControlAccept::STOP | ServiceControlAccept::PRESHUTDOWN | ServiceControlAccept::PARAM_CHANGE,
+                    0,
+                    Duration::default(),
+                );
+            }))
+        }))
+        .unwrap_or_else(|payload| {
+            Err(anyhow::anyhow!("internal error: {}", crate::supervisor::panic_message(payload.as_ref())))
+        });
         set(ServiceState::StopPending, ServiceControlAccept::empty(), 0, Duration::from_secs(60));
         rt.shutdown_timeout(Duration::from_secs(10));
         drop(tx);

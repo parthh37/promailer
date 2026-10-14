@@ -29,6 +29,8 @@ pub mod id {
     pub const RELOAD_FAILED: u32 = 1003;
     /// Start-up failure or fatal runtime error; the service stops.
     pub const FATAL: u32 = 1004;
+    /// The watchdog ended a hung process; the SCM restarts it.
+    pub const HUNG: u32 = 1005;
     pub const CERT_EXPIRING: u32 = 1010;
     pub const CERT_INVALID: u32 = 1011;
     /// A different TLS certificate was picked up (renewal, or the config changed).

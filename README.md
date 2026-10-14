@@ -330,6 +330,7 @@ Event IDs are stable:
 | 1002 | Information | Configuration reloaded                                                  |
 | 1003 | Error       | Configuration reload failed; the previous configuration stays active    |
 | 1004 | Error       | Service could not start or stopped because of an error                  |
+| 1005 | Error       | Service stopped responding; the watchdog ended it so Windows restarts it |
 | 1010 | Warning     | TLS certificate expires soon (checked at load and daily)                |
 | 1011 | Error       | TLS certificate in use is not valid (e.g. expired)                      |
 | 1012 | Information | A different TLS certificate is now in use (renewal picked up)           |
@@ -341,6 +342,18 @@ Routine warnings caused by remote clients (failed logins, relay attempts) stay i
 **TLS certificates**: Promailer re-reads the configured certificate every hour. Renewed PEM files
 (e.g. from win-acme) and certificates renewed in the Windows certificate store (AD CS
 auto-enrollment) are picked up without a restart.
+
+**Automatic start and recovery**: the service starts with Windows (*Automatic (Delayed Start)*)
+and Windows restarts it after 5 s, 30 s and then every 60 s if it fails; the failure count resets
+after a day. Promailer also turns failures that would not end the process into restarts:
+
+- if a subsystem (an SMTP listener, the delivery scheduler, the HTTP API, ...) stops or panics,
+  Promailer shuts down gracefully and exits with an error (event 1004 names the subsystem);
+- if the server stops responding, a watchdog ends the process (event 1005);
+- panics are written to `promailer.log` and the Event Log instead of being lost.
+
+Queued mail is on disk, so a restart never loses messages; deliveries in progress are retried.
+Installers and `promailer service configure` (re)apply these settings.
 
 **Upgrades**: run the new installer. The service is stopped, the binary replaced and the service
 restarted. The queue and configuration are preserved.

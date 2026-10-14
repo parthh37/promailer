@@ -175,6 +175,9 @@ pub async fn run_writer(app: Arc<App>, mut rx: mpsc::Receiver<Event>) {
     let dir = app.cfg().history_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         error!(dir = %dir.display(), error = %e, "cannot create history directory; message history disabled");
+        // Stay alive until shutdown: a restart would not fix this, so it is not a subsystem failure.
+        drop(rx);
+        let _ = app.shutdown_rx().changed().await;
         return;
     }
     let mut shutdown = app.shutdown_rx();
