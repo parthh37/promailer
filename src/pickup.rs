@@ -98,6 +98,8 @@ pub async fn run(app: Arc<App>) {
     let work = dir.join(".processing");
     if let Err(e) = std::fs::create_dir_all(&work) {
         error!(dir = %work.display(), error = %e, "cannot create pickup work directory; pickup disabled");
+        // Stay alive until shutdown: a restart would not fix this, so it is not a subsystem failure.
+        let _ = shutdown.changed().await;
         return;
     }
     // Files left mid-processing by a crash go back to the pickup directory.

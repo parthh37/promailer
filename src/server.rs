@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::dns::Dns;
 use crate::eventlog::id as event_id;
 use crate::queue::{store::Store, Queue};
+use crate::supervisor::{Supervisor, Watchdog};
 use crate::tls::CertHealth;
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -89,23 +90,27 @@ async fn run_inner(
     let pickup_enabled = config.pickup.enabled;
     let app = App::new(config, config_path.to_path_buf(), dns, queue)?;
 
+    // Every subsystem runs until shutdown; one that ends early stops the server with an
+    // error so the SCM restarts the process instead of leaving it running half-dead.
+    let (supervisor, mut faults) = Supervisor::new(app.shutdown_rx());
     let mut tasks = Vec::new();
     for (listener, lcfg) in smtp {
-        tasks.push(tokio::spawn(crate::smtp::server::serve(app.clone(), listener, lcfg)));
+        let name = format!("SMTP listener '{}'", lcfg.name);
+        tasks.push(supervisor.spawn(name, crate::smtp::server::serve(app.clone(), listener, lcfg)));
     }
     if let Some(l) = api_listener {
-        tasks.push(tokio::spawn(crate::api::serve(app.clone(), l)));
+        tasks.push(supervisor.spawn("HTTP API", crate::api::serve(app.clone(), l)));
     }
     if pickup_enabled {
-        tasks.push(tokio::spawn(crate::pickup::run(app.clone())));
+        tasks.push(supervisor.spawn("pickup directory watcher", crate::pickup::run(app.clone())));
     }
     let (history_tx, history_rx) = mpsc::channel(10_000);
     app.events.attach_history(history_tx);
-    let history = tokio::spawn(crate::events::run_writer(app.clone(), history_rx));
-    let scheduler = tokio::spawn(crate::queue::run(app.clone()));
-    tasks.push(tokio::spawn(housekeeping(app.clone())));
-    tasks.push(tokio::spawn(cert_monitor(app.clone())));
-    tasks.push(tokio::spawn(sample_stats(app.clone())));
+    let history = supervisor.spawn("history writer", crate::events::run_writer(app.clone(), history_rx));
+    let scheduler = supervisor.spawn("delivery scheduler", crate::queue::run(app.clone()));
+    tasks.push(supervisor.spawn("housekeeping", housekeeping(app.clone())));
+    tasks.push(supervisor.spawn("certificate monitor", cert_monitor(app.clone())));
+    tasks.push(supervisor.spawn("statistics sampler", sample_stats(app.clone())));
 
     let cfg = app.cfg();
     info!(
@@ -120,6 +125,19 @@ async fn run_inner(
     drop(cfg);
     on_ready();
 
+    // Armed only under the SCM: in console mode nothing would restart the process.
+    let watchdog = if console {
+        None
+    } else {
+        match Watchdog::start(app.clone()) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                warn!(error = %e, "cannot start the watchdog thread; hang detection is off");
+                None
+            }
+        }
+    };
+
     // Ctrl+C only applies to console mode. If the handler can't be registered (e.g. no
     // console under the SCM) the future must never resolve, or we'd shut down at once.
     let ctrl_c = async move {
@@ -130,8 +148,13 @@ async fn run_inner(
     };
     tokio::pin!(ctrl_c);
 
+    let mut failure = None;
     loop {
         tokio::select! {
+            Some(fault) = faults.recv() => {
+                failure = Some(fault);
+                break;
+            }
             msg = control.recv() => match msg {
                 Some(Control::Reload) => {
                     if let Err(e) = app.reload() {
@@ -151,6 +174,9 @@ async fn run_inner(
         }
     }
 
+    // Disarm first: ending the process during a requested stop would look like a crash,
+    // and the SCM would restart a service the administrator just stopped.
+    drop(watchdog);
     info!("shutting down");
     app.trigger_shutdown();
     let grace = app.cfg().server.shutdown_grace + Duration::from_secs(5);
@@ -162,7 +188,12 @@ async fn run_inner(
     }
     // Last, so events from the final deliveries are flushed to history.
     let _ = tokio::time::timeout(Duration::from_secs(5), history).await;
-    Ok(())
+    // Shut down gracefully (in-flight deliveries finish or are re-queued) before reporting
+    // the failure: the non-zero exit code is what makes the SCM restart the service.
+    match failure {
+        Some(fault) => Err(anyhow::anyhow!(fault)),
+        None => Ok(()),
+    }
 }
 
 async fn housekeeping(app: Arc<App>) {

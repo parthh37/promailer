@@ -21,6 +21,7 @@ mod server;
 mod service;
 mod smtp;
 mod stats;
+mod supervisor;
 mod tls;
 
 use anyhow::{Context, Result};
@@ -222,6 +223,7 @@ enum QueueCmd {
 }
 
 fn main() {
+    supervisor::install_panic_hook();
     let cli = Cli::parse();
     if let Err(e) = dispatch(cli) {
         eprintln!("error: {e:#}");
