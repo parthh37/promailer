@@ -50,6 +50,9 @@ pub async fn run(
         data_dir = %config.server.data_dir.display(),
         "Promailer starting"
     );
+    if config.crash_reports.enabled {
+        install_crash_hook(&config);
+    }
 
     let result = run_inner(config, config_path, console, &mut control, on_ready).await;
     if let Err(e) = &result {
@@ -106,6 +109,7 @@ async fn run_inner(
     tasks.push(tokio::spawn(housekeeping(app.clone())));
     tasks.push(tokio::spawn(cert_monitor(app.clone())));
     tasks.push(tokio::spawn(sample_stats(app.clone())));
+    tasks.push(tokio::spawn(crash_uploader(app.clone())));
 
     let cfg = app.cfg();
     info!(
@@ -231,6 +235,67 @@ async fn cert_monitor(app: Arc<App>) {
             }
         }
     }
+}
+
+/// Save a crash report for every distinct panic and log it to the Event Log.
+/// Panics in sessions and deliveries are contained (the service keeps running),
+/// so without this they would only show up as a stderr line nobody sees.
+fn install_crash_hook(config: &Config) {
+    promailer_crash::install_with(
+        "promailer",
+        config.crash_dir(),
+        vec![config.server.hostname.clone()],
+        Some(Box::new(|report, saved| {
+            error!(
+                event_id = event_id::CRASH,
+                location = %report.location,
+                fingerprint = %report.fingerprint,
+                report = %saved.map_or_else(|| "not saved (repeat)".into(), |p| p.display().to_string()),
+                "Promailer hit an internal error: {}. Please report it from Promailer Manager (Status) \
+                 or set [crash_reports] github_token to file reports automatically.",
+                report.message
+            );
+        })),
+    );
+}
+
+/// File pending crash reports on GitHub when the operator configured a token.
+async fn crash_uploader(app: Arc<App>) {
+    const EVERY: Duration = Duration::from_secs(600);
+    let mut shutdown = app.shutdown_rx();
+    // The first pass soon after start-up files the report of a crash that stopped the service.
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + Duration::from_secs(30), EVERY);
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {}
+            _ = shutdown.changed() => break,
+        }
+        let cfg = app.cfg();
+        let c = &cfg.crash_reports;
+        if !c.enabled || c.github_token.trim().is_empty() {
+            continue;
+        }
+        let (dir, repo, token) = (cfg.crash_dir(), c.github_repo.clone(), c.github_token.clone());
+        drop(cfg);
+        match tokio::task::spawn_blocking(move || file_crash_reports(&dir, &repo, &token)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => warn!(error = %e, "could not file crash reports on GitHub; will retry"),
+            Err(e) => warn!(error = %e, "crash report upload task failed"),
+        }
+    }
+}
+
+/// Oldest first, a few per pass; stops at the first failure (token or network problem).
+fn file_crash_reports(dir: &Path, repo: &str, token: &str) -> std::result::Result<usize, String> {
+    const PER_PASS: usize = 5;
+    let mut filed = 0;
+    for report in promailer_crash::pending(dir).into_iter().rev().take(PER_PASS) {
+        let url = promailer_crash::github::upload(repo, token, &report)?;
+        promailer_crash::mark_reported(dir, &report, &url).map_err(|e| e.to_string())?;
+        info!(issue = %url, fingerprint = %report.fingerprint, "crash report filed on GitHub");
+        filed += 1;
+    }
+    Ok(filed)
 }
 
 /// Feed the dashboard's throughput / queue-size time series.

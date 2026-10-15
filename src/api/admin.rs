@@ -466,6 +466,54 @@ pub(super) async fn dkim_delete(
     Ok(Json(json!({ "removed": true, "applied": applied })))
 }
 
+// ---------------------------------------------------------------------------
+// Crash reports
+// ---------------------------------------------------------------------------
+
+/// Crash reports in `<data_dir>/crashes`, newest first, each with a pre-filled
+/// GitHub "new issue" link for manual reporting.
+pub(super) async fn crashes_list(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> ApiResult<impl IntoResponse> {
+    authorize(&app, &headers, peer, ApiPermission::Admin)?;
+    let cfg = app.cfg();
+    let (dir, repo) = (cfg.crash_dir(), cfg.crash_reports.github_repo.clone());
+    let auto_report = cfg.crash_reports.enabled && !cfg.crash_reports.github_token.trim().is_empty();
+    drop(cfg);
+    let reports = tokio::task::spawn_blocking(move || promailer_crash::load_all(&dir))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let reports: Vec<serde_json::Value> = reports
+        .iter()
+        .map(|r| {
+            let mut v = serde_json::to_value(r).unwrap_or_default();
+            v["new_issue_url"] = promailer_crash::github::new_issue_url(&repo, r).into();
+            v
+        })
+        .collect();
+    Ok(Json(json!({ "auto_report": auto_report, "repo": repo, "reports": reports })))
+}
+
+pub(super) async fn crash_delete(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    authorize(&app, &headers, peer, ApiPermission::Admin)?;
+    if !promailer_crash::valid_id(&id) {
+        return Err(bad("invalid crash report id"));
+    }
+    let dir = app.cfg().crash_dir();
+    match promailer_crash::dismiss(&dir, &id) {
+        Ok(true) => Ok(Json(json!({ "deleted": true }))),
+        Ok(false) => Err(ApiError(StatusCode::NOT_FOUND, "crash report not found".into())),
+        Err(e) => Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

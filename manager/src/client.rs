@@ -194,6 +194,14 @@ impl Client {
         Self::finish(self.slow_agent.post(self.url("/api/v1/dkim")).header("X-API-Key", &self.key).send_json(body))
     }
 
+    pub fn crashes(&self) -> ApiResult<CrashList> {
+        self.get("/api/v1/crashes")
+    }
+
+    pub fn crash_delete(&self, id: &str) -> ApiResult<serde_json::Value> {
+        self.send("DELETE", &format!("/api/v1/crashes/{}", encode(id)), None)
+    }
+
     pub fn dkim_delete(&self, domain: &str, selector: &str) -> ApiResult<serde_json::Value> {
         self.send("DELETE", &format!("/api/v1/dkim/{}/{}", encode(domain), encode(selector)), None)
     }
@@ -574,4 +582,22 @@ mod tests {
         assert_eq!(Client::new("127.0.0.1:8025/", "k").base(), "http://127.0.0.1:8025");
         assert_eq!(Client::new("https://mx:8443", "k").base(), "https://mx:8443");
     }
+}
+
+/// Crash reports saved by the service (`GET /api/v1/crashes`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CrashList {
+    /// The service files reports on GitHub itself (a token is configured).
+    pub auto_report: bool,
+    pub repo: String,
+    pub reports: Vec<ServerCrash>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerCrash {
+    #[serde(flatten)]
+    pub report: promailer_crash::CrashReport,
+    #[serde(default)]
+    pub new_issue_url: String,
 }

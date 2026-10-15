@@ -58,6 +58,8 @@ pub struct Config {
     pub api: ApiConfig,
     #[serde(default)]
     pub history: HistoryConfig,
+    #[serde(default)]
+    pub crash_reports: CrashReportsConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -747,6 +749,30 @@ impl Default for HistoryConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [crash_reports]
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct CrashReportsConfig {
+    /// Save a report under `<data_dir>/crashes` when Promailer hits an internal error
+    /// (panic): version, message and code location, with addresses and names removed.
+    pub enabled: bool,
+    /// GitHub repository (`owner/name`) that receives reports.
+    pub github_repo: String,
+    /// Fine-grained token with "Issues: read and write" on `github_repo`. When set,
+    /// reports are filed automatically (one issue per distinct bug; repeats add a
+    /// comment). Empty: report them from Promailer Manager instead.
+    pub github_token: String,
+}
+
+impl Default for CrashReportsConfig {
+    fn default() -> Self {
+        Self { enabled: true, github_repo: promailer_crash::github::DEFAULT_REPO.into(), github_token: String::new() }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ByteSize: accepts 1048576, "1048576", "512KB", "25MB", "1GB"
 // ---------------------------------------------------------------------------
 
@@ -937,6 +963,9 @@ impl Config {
                 bail!("duplicate user '{}'", u.username);
             }
         }
+        if !promailer_crash::github::valid_repo(&self.crash_reports.github_repo) {
+            bail!("crash_reports.github_repo must look like owner/name");
+        }
         for k in &self.api.keys {
             if k.key_sha256.len() != 64 || !k.key_sha256.chars().all(|c| c.is_ascii_hexdigit()) {
                 bail!("api key '{}': key_sha256 must be 64 hex characters", k.name);
@@ -1016,6 +1045,9 @@ impl Config {
     }
     pub fn history_dir(&self) -> PathBuf {
         self.server.data_dir.join("history")
+    }
+    pub fn crash_dir(&self) -> PathBuf {
+        self.server.data_dir.join("crashes")
     }
 }
 

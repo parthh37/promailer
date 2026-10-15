@@ -33,6 +33,8 @@ pub mod id {
     pub const CERT_INVALID: u32 = 1011;
     /// A different TLS certificate was picked up (renewal, or the config changed).
     pub const CERT_CHANGED: u32 = 1012;
+    /// Internal error (panic); a crash report was saved.
+    pub const CRASH: u32 = 1020;
     /// Any other error.
     pub const ERROR: u32 = 1100;
     /// The error rate limit was reached.

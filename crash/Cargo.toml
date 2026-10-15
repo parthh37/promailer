@@ -1,0 +1,20 @@
+[package]
+name = "promailer-crash"
+description = "Crash reports for Promailer: panic capture, scrubbing and GitHub issue filing"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+# Filing issues through the GitHub REST API (the service; the GUIs only open pre-filled pages).
+upload = ["dep:ureq"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+sha2 = "0.10"
+ureq = { version = "3", default-features = false, features = ["rustls", "json"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"

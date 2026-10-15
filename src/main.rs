@@ -131,6 +131,8 @@ enum ServiceCmd {
     Uninstall,
     Start,
     Stop,
+    /// Stop the service (if running) and start it again.
+    Restart,
     /// Ask the running service to reload its configuration.
     Reload,
     /// Apply recovery and start-up settings to an installed service (used by the MSI).
@@ -250,6 +252,13 @@ fn dispatch(cli: Cli) -> Result<()> {
             ServiceCmd::Uninstall => service::uninstall(),
             ServiceCmd::Start => service::start(),
             ServiceCmd::Stop => service::stop(),
+            ServiceCmd::Restart => {
+                // Already stopped is fine; the start below reports real problems.
+                if let Err(e) = service::stop() {
+                    eprintln!("note: {e:#}");
+                }
+                service::start()
+            }
             ServiceCmd::Reload => service::reload(),
             ServiceCmd::Configure => service::configure(),
             ServiceCmd::Run { config } => service::run_dispatcher(config),
