@@ -57,6 +57,18 @@ All notable changes to this project are documented here. The format follows
   built and smoke-tested with every release next to `Setup.exe`.
 - Release binaries, `Setup.exe` and the MSI are Authenticode-signed once a signing certificate is configured.
 - `promailer.exe` carries Windows version information.
+
+### Reliability
+- Subsystem supervision: if an SMTP listener, the delivery scheduler, the HTTP API, the pickup
+  watcher or another background task stops or panics, Promailer shuts down gracefully and exits
+  with an error so the Service Control Manager restarts it, instead of running without it.
+- Hang watchdog: when the service stops responding, the process is ended (Event ID 1005) and
+  restarted by the SCM. Machine sleep, VM pauses and debugger breaks are not treated as hangs.
+- Panics are recorded in `promailer.log` and the Event Log; a panic in the service's main thread
+  is reported as a failure (and restarted) instead of aborting without a status report.
+- Setup.exe re-applies delayed auto-start and the restart-on-failure actions on upgrades.
+- A history or pickup directory that cannot be created disables only that feature; it does not
+  cause a restart loop.
 - `promailer config init --hostname <name> --keep-existing`.
 
 ## [0.1.0] - 2026-10-13

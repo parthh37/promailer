@@ -91,6 +91,8 @@ Filename: "{sys}\sc.exe"; Parameters: "config SMTPSVC start= disabled"; Flags: r
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Promailer SMTP"""; Flags: runhidden waituntilterminated; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Promailer SMTP"" dir=in action=allow protocol=TCP localport=25,587,465 program=""{app}\{#AppExe}"""; Flags: runhidden waituntilterminated; Tasks: firewall
 Filename: "{app}\{#AppExe}"; Parameters: "service install --config ""{commonappdata}\Promailer\promailer.toml"""; Flags: runhidden waituntilterminated; StatusMsg: "Installing Windows service..."; Tasks: service; Check: not ServiceExists
+; Upgrades: re-apply delayed auto-start and the restart-on-failure actions (idempotent after a fresh install).
+Filename: "{app}\{#AppExe}"; Parameters: "service configure"; Flags: runhidden waituntilterminated; StatusMsg: "Configuring Windows service..."; Check: ServiceExists
 Filename: "{app}\{#AppExe}"; Parameters: "service start"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."; Tasks: service\start
 Filename: "notepad.exe"; Parameters: """{commonappdata}\Promailer\promailer.toml"""; Description: "Review the configuration now"; Flags: postinstall nowait skipifsilent unchecked
 Filename: "{app}\{#TrayExe}"; Description: "Show the status icon now"; Flags: postinstall nowait skipifsilent runasoriginaluser; Tasks: tray

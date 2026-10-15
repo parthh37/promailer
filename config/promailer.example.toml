@@ -213,7 +213,7 @@ memory_events = 10000             # recent events kept in memory for the live lo
 # Crash reports: when Promailer hits an internal error (a bug), it saves a report
 # under <data_dir>\crashes - version, error message and code location, with email
 # addresses, IP addresses, host and account names removed. Review and report them
-# from Promailer Manager (Status), or set github_token to file them automatically
+# from Promailer Manager (Help > Crash Reports), or set github_token to file them automatically
 # (one GitHub issue per distinct bug; repeats add a comment to it).
 # The token needs "Issues: read and write" on github_repo (fine-grained token).
 # -----------------------------------------------------------------------------
