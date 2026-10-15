@@ -5,6 +5,7 @@
 use crate::client::{ApiResult, Client, Health, Stats};
 use crate::pages::{
     config::ConfigEditor,
+    crashes::CrashReports,
     dashboard::Dashboard,
     dkim::DkimPage,
     dns::DnsCheck,
@@ -21,6 +22,7 @@ use egui::{RichText, Ui};
 use std::time::{Duration, Instant};
 
 const HEALTH_EVERY: Duration = Duration::from_secs(5);
+pub const WEBSITE: &str = "https://parthh37.github.io/promailer/";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Node {
@@ -63,6 +65,7 @@ struct Pages {
     dns: DnsCheck,
     config: ConfigEditor,
     properties: Properties,
+    crashes: CrashReports,
 }
 
 struct ConnectForm {
@@ -174,6 +177,9 @@ impl ManagerApp {
             self.pages.status.tick(ctx, &self.client);
             self.pages.log.tick(ctx, &self.client);
         }
+        // This computer's Manager/tray reports are shown even when not connected.
+        let client = self.connected().then_some(&self.client);
+        self.pages.crashes.tick(ctx, client);
         ctx.request_repaint_after(Duration::from_secs(1));
     }
 
@@ -211,6 +217,20 @@ impl ManagerApp {
                 }
             });
             ui.menu_button("Help", |ui| {
+                if ui.button("Promailer Website").clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(WEBSITE));
+                }
+                if ui.button("Report a Problem…").clicked() {
+                    let url = promailer_crash::github::report_problem_url(
+                        promailer_crash::github::DEFAULT_REPO,
+                        "promailer-manager",
+                    );
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                }
+                if ui.button("Crash Reports…").clicked() {
+                    self.pages.crashes.open = true;
+                }
+                ui.separator();
                 if ui.button("About Promailer Manager").clicked() {
                     self.about = true;
                 }
@@ -345,6 +365,7 @@ impl ManagerApp {
             ui.heading("Promailer Manager");
             ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
             ui.label(RichText::new("Outbound SMTP server for Windows.").color(GREY));
+            ui.hyperlink(WEBSITE);
             ui.hyperlink("https://github.com/parthh37/promailer");
             if ui.button("  OK  ").clicked() {
                 self.about = false;
@@ -364,6 +385,9 @@ impl eframe::App for ManagerApp {
             self.toolbar(ui);
             ui.add_space(2.0);
         });
+        if self.pages.crashes.pending() > 0 {
+            egui::Panel::top("crash_banner").show(ui, |ui| self.pages.crashes.banner(ui));
+        }
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::left("tree").resizable(true).default_size(220.0).min_size(170.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.tree(ui));
@@ -413,6 +437,8 @@ impl eframe::App for ManagerApp {
             let client = self.client.clone();
             self.pages.properties.show(&ctx, &client);
         }
+        let client = self.connected().then(|| self.client.clone());
+        self.pages.crashes.dialog(&ctx, client.as_ref());
         self.connect_dialog(&ctx);
         self.about_dialog(&ctx);
     }

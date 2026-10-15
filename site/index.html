@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Promailer — outbound SMTP server for Windows, the IIS 6 SMTP replacement</title>
+  <meta name="description" content="Promailer replaces the IIS 6 SMTP service on Windows Server: SMTP, Pickup directory and HTTP API in, DKIM-signed delivery with retries out. One Windows service, settings IIS administrators already know.">
+  <meta property="og:title" content="Promailer — the IIS 6 SMTP service, rebuilt">
+  <meta property="og:description" content="Outbound SMTP server for Windows: Pickup directory, relay rules, smart host and badmail as you know them, plus DKIM, TLS from the certificate store and a crash-safe queue.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..900&family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:wght@400;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="top">
+    <a class="brand" href="./" aria-label="Promailer home">
+      <img src="icon.svg" alt="" width="28" height="28">
+      <span>Promailer</span>
+    </a>
+    <nav aria-label="Primary">
+      <a href="#iis">From IIS 6</a>
+      <a href="#features">Features</a>
+      <a href="#start">Get started</a>
+      <a href="https://github.com/parthh37/promailer">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="reply"><span class="code c2">220</span> Service ready</p>
+        <h1 id="hero-title">The IIS&nbsp;6 SMTP service, rebuilt for today’s Windows&nbsp;Server.</h1>
+        <p class="lede">
+          Promailer takes mail from your applications over SMTP, the Pickup directory or an HTTP API,
+          signs it with DKIM and delivers it with retries and bounce handling. It runs as one Windows
+          service, and every IIS&nbsp;6 setting has a place in it.
+        </p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/parthh37/promailer/releases/latest">Download for Windows</a>
+          <a class="button" href="https://github.com/parthh37/promailer#readme">Read the documentation</a>
+        </div>
+        <p class="meta">Windows 10 / Server 2016 or later · x64 · Setup.exe, MSI or portable zip</p>
+      </div>
+
+      <figure class="console" aria-label="An application sending one message through Promailer">
+        <figcaption><span class="dot"></span>app01 → localhost:25</figcaption>
+        <ol class="session" id="session">
+          <li class="s"><b class="c2">220</b> mail.example.com ESMTP Promailer ready</li>
+          <li class="c">EHLO app01.corp.example</li>
+          <li class="s"><b class="c2">250-</b>mail.example.com Hello [10.0.4.21]</li>
+          <li class="s"><b class="c2">250-</b>PIPELINING</li>
+          <li class="s"><b class="c2">250-</b>8BITMIME</li>
+          <li class="s"><b class="c2">250 </b>STARTTLS</li>
+          <li class="c">MAIL FROM:&lt;orders@example.com&gt;</li>
+          <li class="s"><b class="c2">250</b> 2.1.0 Sender OK</li>
+          <li class="c">RCPT TO:&lt;customer@gmail.com&gt;</li>
+          <li class="s"><b class="c2">250</b> 2.1.5 Recipient OK</li>
+          <li class="c">DATA</li>
+          <li class="s"><b class="c3">354</b> Start mail input; end with &lt;CRLF&gt;.&lt;CRLF&gt;</li>
+          <li class="c">.</li>
+          <li class="s"><b class="c2">250</b> 2.6.0 Queued as 01JA3Q7RZK</li>
+          <li class="note">DKIM-signed · delivered to gmail-smtp-in.l.google.com in 0.8 s</li>
+        </ol>
+      </figure>
+    </section>
+
+    <section class="band" id="iis" aria-labelledby="iis-title">
+      <div class="section-head">
+        <p class="reply"><span class="code c2">250</span> Settings you already know</p>
+        <h2 id="iis-title">Move over without relearning anything.</h2>
+        <p>
+          Your applications keep the same Pickup folder and port&nbsp;25. Relay rules, smart host, retry
+          intervals and the badmail folder all carry over. Each IIS&nbsp;6 property has a setting in
+          <code>promailer.toml</code>, and Promailer Manager lays them out like the MMC snap-in you used before.
+        </p>
+      </div>
+      <div class="table-wrap">
+        <table class="map">
+          <caption class="sr">IIS 6 SMTP settings and their Promailer equivalents</caption>
+          <thead><tr><th scope="col">IIS 6 SMTP</th><th scope="col">Promailer</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Pickup / Drop / Queue directories</th><td><code>pickup\</code> <code>drop\</code> <code>queue\</code></td></tr>
+            <tr><th scope="row">Badmail directory</th><td><code>badmail\</code> with <code>.BAD</code> and <code>.BDR</code> files</td></tr>
+            <tr><th scope="row">Relay restrictions</th><td><code>access.relay_allow</code>, <code>access.relay_authenticated</code></td></tr>
+            <tr><th scope="row">Smart host</th><td><code>[delivery.smarthost]</code></td></tr>
+            <tr><th scope="row">Outbound retry intervals</th><td><code>delivery.retry_intervals</code></td></tr>
+            <tr><th scope="row">Delay notification / expiration timeout</th><td><code>delivery.delay_notification_after</code>, <code>delivery.expire_after</code></td></tr>
+            <tr><th scope="row">Masquerade domain</th><td><code>server.masquerade_domain</code></td></tr>
+            <tr><th scope="row">Secure communication › Certificate</th><td><code>[tls] thumbprint</code> from the Windows certificate store</td></tr>
+          </tbody>
+        </table>
+        <p class="more"><a href="https://github.com/parthh37/promailer#iis-6-smtp-feature-mapping">See all 23 mapped settings</a></p>
+      </div>
+    </section>
+
+    <section class="band" id="features" aria-labelledby="features-title">
+      <div class="section-head">
+        <p class="reply"><span class="code c2">250</span> And more than IIS ever did</p>
+        <h2 id="features-title">Everything IIS 6 left out.</h2>
+      </div>
+      <ul class="caps">
+        <li><span class="cap">250-</span><h3>DKIM signing and DNS checks</h3><p>Generate keys, sign by From: domain, and check PTR, SPF, DKIM and DMARC with <code>promailer check</code>.</p></li>
+        <li><span class="cap">250-</span><h3>TLS from the certificate store</h3><p>Use the same certificate as IIS by thumbprint. Non-exportable, TPM and HSM keys work.</p></li>
+        <li><span class="cap">250-</span><h3>A queue that survives restarts</h3><p>Messages are on disk before the app gets <code>250 OK</code>. The service restarts itself if it fails.</p></li>
+        <li><span class="cap">250-</span><h3>HTTP send API</h3><p>Send JSON or raw MIME with per-key sender domains and rate limits.</p></li>
+        <li><span class="cap">250-</span><h3>Promailer Manager</h3><p>Queue, message search, live delivery log, DKIM keys and configuration in a native desktop app.</p></li>
+        <li><span class="cap">250-</span><h3>Status in the notification area</h3><p>A tray icon shows whether the service is running and how much mail is queued.</p></li>
+        <li><span class="cap">250-</span><h3>Windows Event Log</h3><p>Start-up, reload, certificate and failure events under the Promailer source.</p></li>
+        <li><span class="cap">250-</span><h3>Group Policy, SCCM and Intune</h3><p>An MSI with <code>HOSTNAME</code>, <code>START_SERVICE</code>, <code>DESKTOP_SHORTCUT</code> and <code>TRAY</code> properties.</p></li>
+        <li><span class="cap">250 </span><h3>Bug reports you control</h3><p>Internal errors are saved with addresses removed. File them on GitHub from the Manager or automatically.</p></li>
+      </ul>
+    </section>
+
+    <section class="band" id="start" aria-labelledby="start-title">
+      <div class="section-head">
+        <p class="reply"><span class="code c3">354</span> Start sending</p>
+        <h2 id="start-title">Running in four steps.</h2>
+      </div>
+      <ol class="steps">
+        <li>
+          <h3>Install</h3>
+          <p>Run <code>Promailer-x.y.z-x64-Setup.exe</code> as Administrator. It installs the service, the Manager, a desktop shortcut and the status icon, and can switch off the IIS SMTP service for you.</p>
+        </li>
+        <li>
+          <h3>Name the server</h3>
+          <p>Enter the host name that matches your IP’s reverse DNS, for example <code>mail.example.com</code>. Setup writes it to <code>C:\ProgramData\Promailer\promailer.toml</code>.</p>
+        </li>
+        <li>
+          <h3>Point your applications at it</h3>
+          <p>SMTP on <code>localhost:25</code> works unchanged, and so does the .NET Pickup directory:</p>
+<pre><code>var client = new SmtpClient {
+    DeliveryMethod = SmtpDeliveryMethod.SpecifiedPickupDirectory,
+    PickupDirectoryLocation = @"C:\ProgramData\Promailer\pickup"
+};</code></pre>
+        </li>
+        <li>
+          <h3>Check your DNS</h3>
+          <p>Gmail, Outlook and Yahoo expect PTR, SPF, DKIM and DMARC. Promailer tells you exactly what to publish:</p>
+<pre><code>promailer dkim generate --domain example.com --selector s1
+promailer check --domain example.com</code></pre>
+        </li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="end">
+    <p class="reply"><span class="code c2">221</span> 2.0.0 closing connection</p>
+    <div class="end-row">
+      <a class="button primary" href="https://github.com/parthh37/promailer/releases/latest">Download Promailer</a>
+      <nav aria-label="Project">
+        <a href="https://github.com/parthh37/promailer/releases">All releases</a>
+        <a href="https://github.com/parthh37/promailer/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://github.com/parthh37/promailer/issues/new?labels=bug">Report a problem</a>
+        <a href="https://github.com/parthh37/promailer">Source on GitHub</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="session.js" defer></script>
+</body>
+</html>

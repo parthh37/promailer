@@ -2,6 +2,8 @@
 
 **A modern, production-grade outbound SMTP server for Windows: the replacement for the IIS 6 SMTP service.**
 
+Website: **https://parthh37.github.io/promailer/**
+
 Promailer is a single, dependency-free executable written in Rust. It accepts mail from your
 applications (SMTP, Pickup directory or HTTP API), signs it with DKIM, queues it durably and
 delivers it to the world with retries, bounce handling and full logging. It runs as a Windows
@@ -25,6 +27,8 @@ service and keeps every concept IIS 6 administrators already know.
 - [DNS setup for deliverability](#dns-setup-for-deliverability)
 - [IIS 6 SMTP feature mapping](#iis-6-smtp-feature-mapping)
 - [Promailer Manager (GUI)](#promailer-manager-gui)
+- [Status icon (tray)](#status-icon-tray)
+- [Crash reports](#crash-reports)
 - [HTTP API](#http-api)
 - [Operations](#operations)
 - [Building from source](#building-from-source)
@@ -39,7 +43,9 @@ The installer:
 1. installs `promailer.exe` to `C:\Program Files\Promailer`
 2. creates `C:\ProgramData\Promailer\promailer.toml` (never overwritten on upgrade)
 3. registers the **Promailer** Windows service (auto-start, restart on failure)
-4. optionally adds Promailer to `PATH`, opens firewall ports and disables the IIS SMTP service
+4. adds a **Promailer Manager** shortcut to the desktop and the **status icon** to every user's
+   notification area at sign-in (both optional, on by default)
+5. optionally adds Promailer to `PATH`, opens firewall ports and disables the IIS SMTP service
 
 Data lives in `C:\ProgramData\Promailer` (access restricted to Administrators and SYSTEM):
 
@@ -51,7 +57,7 @@ Data lives in `C:\ProgramData\Promailer` (access restricted to Administrators an
 | `badmail\` | undeliverable bounces and rejected pickup files (`.BAD`/`.BDR`)|
 | `logs\`    | `promailer.*.log`, `smtp.*.log`, `delivery.*.log`              |
 
-Silent install: `Promailer-x.y.z-x64-Setup.exe /VERYSILENT /TASKS="service,service\start,path"`
+Silent install: `Promailer-x.y.z-x64-Setup.exe /VERYSILENT /TASKS="service,service\start,path,desktopicon,tray"`
 
 A portable zip is also published for manual deployments.
 
@@ -68,6 +74,8 @@ msiexec /i Promailer-x.y.z-x64.msi /qn HOSTNAME=mail.example.com
 |-----------------|----------------|-------------------------------------------------------------------|
 | `HOSTNAME`      | computer name  | `server.hostname` for a newly created `promailer.toml`            |
 | `START_SERVICE` | `1`            | `0` installs the service without starting it                      |
+| `DESKTOP_SHORTCUT` | `1`         | `0` skips the Promailer Manager shortcut on the all-users desktop |
+| `TRAY`          | `1`            | `0` does not start the status icon at sign-in                     |
 
 For Group Policy, set properties with an MST transform. The configuration is created only if
 missing and is never modified, repaired or removed by the MSI. Upgrades are major upgrades:
@@ -240,6 +248,47 @@ The Manager renders with Direct3D 12 and falls back to Windows' built-in softwar
 works on GPU-less servers over Remote Desktop. If it doesn't start, run
 `promailer-manager.exe --opengl`.
 
+## Status icon (tray)
+
+`promailer-tray.exe` puts the Promailer icon in the notification area. The badge shows the
+service at a glance: **green** running, **amber** starting/stopping, management API unreachable or
+more than 1,000 messages queued, **red** stopped, **grey** not installed. Hover for the queue size
+and host name; right- or left-click for the menu:
+
+- Open Promailer Manager (also: double-click the icon)
+- Start, stop or restart the service (asks for administrator rights)
+- Edit configuration (opens `promailer.toml` in Notepad as administrator), View Event Log, Open Services
+- Report a problem, Promailer website
+- **Start at sign-in**: untick to stop the icon starting for your account only
+
+It needs no API key: it reads the service state from Windows and the public `/health` endpoint of
+the local API (the URL saved in Promailer Manager when it points at this machine, otherwise
+`http://127.0.0.1:8025`).
+
+## Crash reports
+
+When Promailer, the Manager or the status icon hits an internal error (a bug), it saves a crash
+report: version, platform, error message and code location. Email addresses, IP addresses, the
+server host name, the computer name and account names are removed before anything is written.
+
+- Service reports go to `C:\ProgramData\Promailer\crashes` and to the Event Log (ID 1020).
+- Manager and status icon reports go to `%LOCALAPPDATA%\Promailer\crashes`.
+
+Promailer Manager shows a banner when reports are waiting (also **Help → Crash Reports**).
+**Report on GitHub** opens a pre-filled issue for you to review and submit; **Dismiss** deletes it.
+
+To file the service's reports automatically, create a fine-grained GitHub token with
+**Issues: Read and write** on the repository and set it in `promailer.toml`:
+
+```toml
+[crash_reports]
+github_repo = "parthh37/promailer"
+github_token = "github_pat_..."
+```
+
+Each distinct bug gets one issue labelled `crash`; repeats add a comment to the open issue. Set
+`enabled = false` to stop saving reports.
+
 ## HTTP API
 
 Authenticate with `Authorization: Bearer <key>` or `X-API-Key: <key>`. Permissions per key:
@@ -299,7 +348,7 @@ Response: `202 {"id": "01J...", "status": "queued", "recipients": 1}`
 |---|---|
 | Validate configuration | `promailer config check` |
 | Apply configuration changes | `promailer service reload` |
-| Start / stop | `promailer service start` / `promailer service stop` |
+| Start / stop / restart | `promailer service start` / `stop` / `restart` |
 | Run in console (debugging) | `promailer run` |
 | Inspect queue | `promailer queue list`, `promailer queue show <id>` |
 | Deliverability report | `promailer check --domain example.com --ip 203.0.113.10` |
@@ -334,6 +383,7 @@ Event IDs are stable:
 | 1010 | Warning     | TLS certificate expires soon (checked at load and daily)                |
 | 1011 | Error       | TLS certificate in use is not valid (e.g. expired)                      |
 | 1012 | Information | A different TLS certificate is now in use (renewal picked up)           |
+| 1020 | Error       | Internal error (bug); a crash report was saved (see [Crash reports](#crash-reports)) |
 | 1100 | Error       | Any other error (at most 20 per 10 minutes)                             |
 | 1199 | Warning     | Error limit reached; further errors only go to `promailer.log`          |
 

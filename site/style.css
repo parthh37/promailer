@@ -1,0 +1,304 @@
+/* Promailer site. The page reads as one SMTP session: sections are labelled
+   with the reply codes of a real session, in order (220, 250, 354, 221). */
+
+:root {
+  --paper: #e9eef4;
+  --panel: #f7f9fb;
+  --ink: #0f1b2d;
+  --muted: #4f5d72;
+  --rule: #c7d1dd;
+  --signal: #1f6feb;
+  --signal-deep: #174fb0;
+  --ok: #1a7f37;
+  --wait: #b86e00;
+  --console: #0b1526;
+  --console-ink: #cfe0f5;
+  --console-dim: #7f93ad;
+
+  --display: "Archivo", "Arial Narrow", system-ui, sans-serif;
+  --body: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --measure: 62ch;
+  --gutter: clamp(1.25rem, 4vw, 3.5rem);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 1.0625rem/1.6 var(--body);
+}
+
+a { color: var(--signal-deep); text-underline-offset: 0.18em; }
+a:hover { color: var(--signal); }
+:focus-visible { outline: 3px solid var(--signal); outline-offset: 3px; border-radius: 2px; }
+
+code {
+  font: 500 0.88em/1 var(--mono);
+  background: rgb(15 27 45 / 0.06);
+  padding: 0.15em 0.35em;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.skip { position: absolute; left: -999px; top: 0.5rem; background: var(--ink); color: #fff; padding: 0.5rem 1rem; }
+.skip:focus { left: 0.5rem; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+
+/* ---- Header ----------------------------------------------------------- */
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem var(--gutter);
+  border-bottom: 1px solid var(--rule);
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--ink);
+  text-decoration: none;
+  font: 800 1.25rem/1 var(--display);
+  font-stretch: 85%;
+  letter-spacing: -0.01em;
+}
+.top nav { display: flex; flex-wrap: wrap; gap: 0.25rem 1.5rem; }
+.top nav a { color: var(--muted); text-decoration: none; font-weight: 600; font-size: 0.95rem; }
+.top nav a:hover { color: var(--ink); }
+
+/* ---- Reply-code labels ------------------------------------------------- */
+
+.reply {
+  margin: 0 0 1rem;
+  font: 500 0.82rem/1 var(--mono);
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.code {
+  display: inline-block;
+  margin-right: 0.45rem;
+  padding: 0.3em 0.45em;
+  border-radius: 3px;
+  color: #fff;
+  font-weight: 500;
+}
+.code.c2 { background: var(--ok); }
+.code.c3 { background: var(--wait); }
+
+/* ---- Hero -------------------------------------------------------------- */
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: clamp(2rem, 5vw, 5rem);
+  align-items: center;
+  padding: clamp(3rem, 8vw, 6.5rem) var(--gutter) clamp(3rem, 7vw, 5.5rem);
+}
+
+h1, h2, h3 { font-family: var(--display); color: var(--ink); }
+
+h1 {
+  margin: 0 0 1.4rem;
+  font-weight: 850;
+  font-stretch: 68%;
+  font-size: clamp(2.9rem, 6.6vw, 5.6rem);
+  line-height: 0.94;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+.lede { max-width: var(--measure); margin: 0 0 2rem; font-size: 1.15rem; color: #26354b; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.button {
+  display: inline-block;
+  padding: 0.8rem 1.3rem;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+.button:hover { background: var(--ink); color: #fff; }
+.button.primary { background: var(--signal); border-color: var(--signal); color: #fff; }
+.button.primary:hover { background: var(--signal-deep); border-color: var(--signal-deep); }
+.meta { margin: 1.25rem 0 0; color: var(--muted); font-size: 0.9rem; }
+
+/* The session transcript: client lines are what your app sends, server lines are Promailer's replies. */
+.console {
+  margin: 0;
+  background: var(--console);
+  color: var(--console-ink);
+  border-radius: 10px;
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.6) inset, 0 30px 60px -30px rgb(11 21 38 / 0.55);
+  overflow: hidden;
+}
+.console figcaption {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.75rem 1.1rem;
+  border-bottom: 1px solid rgb(207 224 245 / 0.12);
+  font: 500 0.78rem/1 var(--mono);
+  color: var(--console-dim);
+}
+.dot { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: #3fb950; box-shadow: 0 0 0 3px rgb(63 185 80 / 0.2); }
+.session {
+  list-style: none;
+  margin: 0;
+  padding: 1.1rem 1.1rem 1.3rem;
+  min-height: 25.5rem;
+  font: 400 0.84rem/1.62 var(--mono);
+  overflow-x: auto;
+}
+.session li { white-space: pre; }
+.session .c { color: #fff; }
+.session .c::before { content: "› "; color: var(--console-dim); }
+.session .s { color: var(--console-ink); }
+.session .s::before { content: "  "; }
+.session b { font-weight: 500; }
+.session .c2 { color: #56d364; }
+.session .c3 { color: #e3b341; }
+.session .note { margin-top: 0.6rem; color: var(--console-dim); white-space: normal; }
+.session .note::before { content: "✓ "; color: #56d364; }
+
+/* Typing (added by session.js; without JS the whole transcript is shown). */
+.session.typing li { visibility: hidden; }
+.session.typing li.on { visibility: visible; }
+.session.typing li.cursor::after {
+  content: "";
+  display: inline-block;
+  width: 0.55em;
+  height: 1.05em;
+  margin-left: 1px;
+  vertical-align: -0.18em;
+  background: var(--console-ink);
+  animation: blink 1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---- Sections ---------------------------------------------------------- */
+
+.band {
+  padding: clamp(3rem, 7vw, 5.5rem) var(--gutter);
+  border-top: 1px solid var(--rule);
+}
+.section-head { max-width: 46rem; margin-bottom: 2.5rem; }
+h2 {
+  margin: 0 0 1rem;
+  font-weight: 800;
+  font-stretch: 72%;
+  font-size: clamp(2.1rem, 4.4vw, 3.4rem);
+  line-height: 1;
+  letter-spacing: -0.015em;
+}
+.section-head p:not(.reply) { margin: 0; max-width: var(--measure); color: #26354b; }
+
+/* IIS 6 mapping */
+.table-wrap { max-width: 64rem; overflow-x: auto; }
+.map { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+.map th, .map td { text-align: left; padding: 0.85rem 1.1rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+.map thead th {
+  font: 500 0.75rem/1 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  background: #eef2f7;
+}
+.map tbody th { font-weight: 600; width: 42%; }
+.map tbody tr:last-child > * { border-bottom: 0; }
+.map code { white-space: normal; overflow-wrap: anywhere; }
+.more { margin: 1rem 0 0; font-weight: 600; }
+
+/* Features as an EHLO capability reply: "250-" on every line but the last. */
+.caps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  /* Nine capabilities: three full rows. */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  max-width: 72rem;
+  border-top: 1px solid var(--rule);
+  border-left: 1px solid var(--rule);
+}
+.caps li {
+  position: relative;
+  padding: 1.5rem 1.5rem 1.6rem;
+  border-right: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+.cap { display: block; margin-bottom: 0.7rem; font: 500 0.8rem/1 var(--mono); color: var(--ok); white-space: pre; }
+.caps h3 { margin: 0 0 0.4rem; font-weight: 750; font-stretch: 90%; font-size: 1.2rem; line-height: 1.2; }
+.caps p { margin: 0; color: var(--muted); font-size: 0.97rem; }
+
+/* Getting started: a real sequence, so it is numbered. */
+.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; max-width: 50rem; }
+.steps li {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 3.2rem minmax(0, 1fr);
+  column-gap: 1rem;
+  padding: 1.4rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.steps li:first-child { padding-top: 0; }
+.steps li::before {
+  content: counter(step);
+  grid-row: span 3;
+  font: 850 2.4rem/1 var(--display);
+  font-stretch: 62%;
+  color: var(--wait);
+}
+.steps h3 { margin: 0 0 0.35rem; font-weight: 750; font-stretch: 90%; font-size: 1.3rem; }
+.steps p { margin: 0; max-width: var(--measure); }
+.steps pre {
+  margin: 0.9rem 0 0;
+  padding: 1rem 1.1rem;
+  background: var(--console);
+  color: var(--console-ink);
+  border-radius: 8px;
+  overflow-x: auto;
+  font: 400 0.84rem/1.6 var(--mono);
+}
+.steps pre code { background: none; padding: 0; font: inherit; white-space: pre; }
+
+/* ---- Footer ------------------------------------------------------------ */
+
+.end {
+  padding: clamp(3rem, 6vw, 4.5rem) var(--gutter) 3rem;
+  background: var(--ink);
+  color: #dbe5f1;
+}
+.end .reply { color: #9fb1c7; }
+.end-row { display: flex; flex-wrap: wrap; align-items: center; gap: 1.5rem 2.5rem; }
+.end nav { display: flex; flex-wrap: wrap; gap: 0.5rem 1.6rem; }
+.end nav a { color: #dbe5f1; }
+.end nav a:hover { color: #fff; }
+
+/* ---- Small screens ----------------------------------------------------- */
+
+@media (max-width: 900px) {
+  .hero { grid-template-columns: minmax(0, 1fr); }
+  .caps { grid-template-columns: minmax(0, 1fr); }
+  .session { min-height: 0; font-size: 0.78rem; }
+}
+@media (max-width: 560px) {
+  .top { flex-direction: column; align-items: flex-start; }
+  .map tbody th { width: auto; }
+  .steps li { grid-template-columns: 2.2rem minmax(0, 1fr); }
+  .steps li::before { font-size: 1.9rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .button { transition: none; }
+}

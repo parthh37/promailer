@@ -98,6 +98,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/v1/dkim", get(admin::dkim_list))
         .route("/api/v1/dkim", post(admin::dkim_create))
         .route("/api/v1/dkim/{domain}/{selector}", delete(admin::dkim_delete))
+        .route("/api/v1/crashes", get(admin::crashes_list))
+        .route("/api/v1/crashes/{id}", delete(admin::crash_delete))
         .layer(DefaultBodyLimit::max(limit))
         .with_state(app)
 }

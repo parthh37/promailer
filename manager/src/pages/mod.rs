@@ -1,4 +1,5 @@
 pub mod config;
+pub mod crashes;
 pub mod dashboard;
 pub mod dkim;
 pub mod dns;
