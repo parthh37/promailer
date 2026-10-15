@@ -12,6 +12,8 @@ $exe = Join-Path $app 'promailer.exe'
 $data = Join-Path $env:ProgramData 'Promailer'
 $config = Join-Path $data 'promailer.toml'
 $sourceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\Promailer'
+$runKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+$desktopShortcut = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Promailer Manager.lnk'
 $started = Get-Date
 $createdCerts = @()
 
@@ -99,11 +101,15 @@ Step "Installing $Installer"
 if ($isMsi) {
     $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$Installer`"", '/qn', '/norestart', '/l*v', 'msi-install.log', 'HOSTNAME=Smoke.Example.Test', 'START_SERVICE=0' -Wait -PassThru
 } else {
-    $p = Start-Process $Installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS="service,!service\start,path"', '/LOG=install.log' -Wait -PassThru
+    $p = Start-Process $Installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS="service,!service\start,path,desktopicon,tray"', '/LOG=install.log' -Wait -PassThru
 }
 if ($p.ExitCode -ne 0) { Fail "installer exit code $($p.ExitCode)" }
 if (-not (Test-Path $exe)) { Fail "promailer.exe not installed" }
 if (-not (Test-Path (Join-Path $app 'promailer-manager.exe'))) { Fail "promailer-manager.exe not installed" }
+if (-not (Test-Path (Join-Path $app 'promailer-tray.exe'))) { Fail "promailer-tray.exe not installed" }
+if (-not (Test-Path $desktopShortcut)) { Fail "desktop shortcut not created ($desktopShortcut)" }
+$trayRun = (Get-ItemProperty $runKey -ErrorAction SilentlyContinue).'Promailer Tray'
+if ($trayRun -notmatch 'promailer-tray\.exe" --autostart$') { Fail "status icon not registered to start at sign-in ('$trayRun')" }
 if (-not (Test-Path $config)) { Fail "default configuration not created" }
 if (-not (Get-Service Promailer -ErrorAction SilentlyContinue)) { Fail "service not registered" }
 if ((Get-Service Promailer).Status -ne 'Stopped') { Fail "service started although it was asked not to" }
@@ -233,6 +239,8 @@ Start-Sleep -Seconds 3
 if (Get-Service Promailer -ErrorAction SilentlyContinue) { Fail "service still registered after uninstall" }
 if (-not (Test-Path $config)) { Fail "configuration was removed by uninstall (must be kept)" }
 if (Test-Path $sourceKey) { Fail "Event Log source still registered after uninstall" }
+if (Test-Path $desktopShortcut) { Fail "desktop shortcut still present after uninstall" }
+if ((Get-ItemProperty $runKey -ErrorAction SilentlyContinue).'Promailer Tray') { Fail "status icon sign-in entry still present after uninstall" }
 $createdCerts | ForEach-Object { Remove-Item "Cert:\LocalMachine\My\$($_.Thumbprint)" -DeleteKey -ErrorAction SilentlyContinue }
 
 Write-Host "`nSMOKE TEST PASSED ($([IO.Path]::GetFileName($Installer)))" -ForegroundColor Green

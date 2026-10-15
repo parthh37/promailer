@@ -25,3 +25,7 @@ toml_edit = "0.22"
 argon2 = "0.5"
 password-hash = { version = "0.5", features = ["getrandom"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+promailer-crash = { path = "../crash" }
+
+[build-dependencies]
+embed-resource = "3"

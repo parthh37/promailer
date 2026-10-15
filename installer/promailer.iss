@@ -11,6 +11,8 @@
 #define AppURL "https://github.com/parthh37/promailer"
 #define AppExe "promailer.exe"
 #define ManagerExe "promailer-manager.exe"
+#define TrayExe "promailer-tray.exe"
+#define TrayRunValue "Promailer Tray"
 
 [Setup]
 ; Never change AppId: it links upgrades to existing installations.
@@ -50,6 +52,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "service"; Description: "Install as a Windows service (starts automatically with Windows)"; GroupDescription: "Service:"
 Name: "service\start"; Description: "Start the service when setup finishes"; GroupDescription: "Service:"
+Name: "desktopicon"; Description: "Create a Promailer Manager shortcut on the desktop"; GroupDescription: "Shortcuts:"
+Name: "tray"; Description: "Show the Promailer status icon in the notification area at sign-in"; GroupDescription: "Shortcuts:"
 Name: "path"; Description: "Add promailer.exe to the system PATH"; GroupDescription: "Other:"
 Name: "firewall"; Description: "Allow inbound SMTP (ports 25, 587, 465) in Windows Firewall"; GroupDescription: "Other:"; Flags: unchecked
 Name: "disableiis"; Description: "Stop and disable the IIS SMTP service (SMTPSVC) so Promailer can use port 25"; GroupDescription: "Migration from IIS 6 SMTP:"; Flags: unchecked
@@ -62,6 +66,7 @@ Name: "{commonappdata}\Promailer\certs"; Flags: uninsneveruninstall
 [Files]
 Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\{#ManagerExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\{#TrayExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\config\promailer.example.toml"; DestDir: "{app}"; Flags: ignoreversion
@@ -72,6 +77,8 @@ Source: "..\config\promailer.example.toml"; DestDir: "{commonappdata}\Promailer"
 
 [Icons]
 Name: "{autoprograms}\Promailer\Promailer Manager"; Filename: "{app}\{#ManagerExe}"; Comment: "Dashboard, queue, message search, live log, configuration and DNS checks"
+Name: "{autoprograms}\Promailer\Promailer Status Icon"; Filename: "{app}\{#TrayExe}"; Comment: "Service status in the notification area"
+Name: "{autodesktop}\Promailer Manager"; Filename: "{app}\{#ManagerExe}"; Comment: "Dashboard, queue, message search, live log, configuration and DNS checks"; Tasks: desktopicon
 Name: "{autoprograms}\Promailer\Edit configuration"; Filename: "notepad.exe"; Parameters: """{commonappdata}\Promailer\promailer.toml"""
 Name: "{autoprograms}\Promailer\Data folder (queue, logs, badmail)"; Filename: "{commonappdata}\Promailer"
 Name: "{autoprograms}\Promailer\README"; Filename: "{app}\README.md"
@@ -86,8 +93,12 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""P
 Filename: "{app}\{#AppExe}"; Parameters: "service install --config ""{commonappdata}\Promailer\promailer.toml"""; Flags: runhidden waituntilterminated; StatusMsg: "Installing Windows service..."; Tasks: service; Check: not ServiceExists
 Filename: "{app}\{#AppExe}"; Parameters: "service start"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."; Tasks: service\start
 Filename: "notepad.exe"; Parameters: """{commonappdata}\Promailer\promailer.toml"""; Description: "Review the configuration now"; Flags: postinstall nowait skipifsilent unchecked
+Filename: "{app}\{#TrayExe}"; Description: "Show the status icon now"; Flags: postinstall nowait skipifsilent runasoriginaluser; Tasks: tray
+Filename: "{app}\{#ManagerExe}"; Description: "Open Promailer Manager"; Flags: postinstall nowait skipifsilent runasoriginaluser unchecked
 
 [UninstallRun]
+; Every signed-in user's tray icon, so its executable can be removed.
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#TrayExe}"; Flags: runhidden waituntilterminated; RunOnceId: "StopTray"
 Filename: "{app}\{#AppExe}"; Parameters: "service uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveService"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Promailer SMTP"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveFirewall"
 
@@ -96,6 +107,10 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\EventLog\Application\Promailer"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\EventLog\Application\Promailer"; ValueType: expandsz; ValueName: "EventMessageFile"; ValueData: "{app}\{#AppExe}"
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\EventLog\Application\Promailer"; ValueType: dword; ValueName: "TypesSupported"; ValueData: "7"
+; Status icon at sign-in for every user (each user can turn it off from the icon's menu).
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#TrayRunValue}"; ValueData: """{app}\{#TrayExe}"" --autostart"; Flags: uninsdeletevalue; Tasks: tray
+; Upgrade with the task cleared: remove the entry an earlier installation created.
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "{#TrayRunValue}"; Flags: deletevalue; Tasks: not tray
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Tasks: path; Check: NeedsAddPath(ExpandConstant('{app}'))
 
 [Code]
@@ -178,6 +193,8 @@ begin
   Result := '';
   ConfigExisted := FileExists(ConfigPath);
   ServiceWasRunning := False;
+  // Upgrade: close status icons (every session) so promailer-tray.exe can be replaced.
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#TrayExe}', '', SW_HIDE, ewWaitUntilTerminated, Code);
   // Upgrade: stop the running service so the executable can be replaced.
   if ServiceExists then
   begin

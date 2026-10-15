@@ -8,6 +8,9 @@
     HOSTNAME       server.hostname written into a newly created promailer.toml
                    (default: the computer name). Existing configurations are never modified.
     START_SERVICE  1 (default) starts the service after installation; 0 leaves it stopped.
+    DESKTOP_SHORTCUT  1 (default) puts a Promailer Manager shortcut on the all-users desktop; 0 does not.
+    TRAY           1 (default) starts the status icon (notification area) at every user's sign-in;
+                   0 does not. Users can also turn it off from the icon's menu.
 
   The live configuration (%ProgramData%\Promailer\promailer.toml), queue, keys and logs are
   not MSI-owned: they survive upgrades, repairs and uninstallation.
@@ -30,6 +33,8 @@
     <Property Id="ARPHELPLINK" Value="https://github.com/parthh37/promailer/issues" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="START_SERVICE" Value="1" Secure="yes" />
+    <Property Id="DESKTOP_SHORTCUT" Value="1" Secure="yes" />
+    <Property Id="TRAY" Value="1" Secure="yes" />
     <Property Id="HOSTNAME" Secure="yes" />
     <SetProperty Id="HOSTNAME" Value="[ComputerName]" Before="CostFinalize" Sequence="both" Condition="NOT HOSTNAME" />
 
@@ -48,6 +53,8 @@
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="MENUFOLDER" Name="Promailer" />
     </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+    <StandardDirectory Id="System64Folder" />
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="DATAFOLDER" Name="Promailer">
         <Directory Id="DKIMFOLDER" Name="dkim" />
@@ -73,7 +80,19 @@
                   Execute="deferred"
                   Impersonate="no"
                   Return="check" />
+    <!-- Close every user's status icon so promailer-tray.exe can be replaced or removed
+         (not running is fine). Deferred and not impersonated: LocalSystem may end other sessions' processes. -->
+    <CustomAction Id="StopTray"
+                  Directory="System64Folder"
+                  ExeCommand="&quot;[System64Folder]taskkill.exe&quot; /F /IM promailer-tray.exe"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+    <!-- Interactive installs show the status icon right away; otherwise it starts at the next sign-in. -->
+    <CustomAction Id="LaunchTray" FileRef="PromailerTrayExe" ExeCommand="--autostart" Execute="immediate" Return="asyncNoWait" />
     <InstallExecuteSequence>
+      <Custom Action="StopTray" After="InstallInitialize" />
+      <Custom Action="LaunchTray" After="InstallFinalize" Condition="TRAY = &quot;1&quot; AND NOT REMOVE~=&quot;ALL&quot; AND UILevel &gt;= 4" />
       <Custom Action="CreateConfig" After="InstallFiles" Condition="NOT REMOVE~=&quot;ALL&quot;" />
       <Custom Action="ConfigureService" After="InstallServices" Condition="NOT REMOVE~=&quot;ALL&quot;" />
     </InstallExecuteSequence>
@@ -121,13 +140,30 @@
       </Component>
 
       <File Id="PromailerManagerExe" Source="target\release\promailer-manager.exe" />
+      <File Id="PromailerTrayExe" Source="target\release\promailer-tray.exe" />
       <Component Id="ManagerShortcut" Directory="MENUFOLDER">
         <Shortcut Id="ManagerStartMenu" Name="Promailer Manager"
                   Description="Dashboard, queue, message search, live log, configuration and DNS checks"
                   Target="[#PromailerManagerExe]" WorkingDirectory="INSTALLFOLDER" />
+        <Shortcut Id="TrayStartMenu" Name="Promailer Status Icon"
+                  Description="Service status in the notification area"
+                  Target="[#PromailerTrayExe]" WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="RemoveMenuFolder" On="uninstall" />
         <!-- Non-advertised shortcuts need a registry key path (ICE43). -->
         <RegistryValue Root="HKCU" Key="Software\Promailer" Name="ManagerShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+
+      <Component Id="DesktopShortcut" Directory="DesktopFolder" Condition="DESKTOP_SHORTCUT = &quot;1&quot;">
+        <Shortcut Id="ManagerDesktop" Name="Promailer Manager"
+                  Description="Dashboard, queue, message search, live log, configuration and DNS checks"
+                  Target="[#PromailerManagerExe]" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\Promailer" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+
+      <!-- Status icon at sign-in for every user. -->
+      <Component Id="TrayAutostart" Condition="TRAY = &quot;1&quot;">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run" Name="Promailer Tray"
+                       Type="string" Value="&quot;[#PromailerTrayExe]&quot; --autostart" KeyPath="yes" />
       </Component>
 
       <!-- One generated component per file (unversioned files cannot share one). -->

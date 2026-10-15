@@ -2,9 +2,15 @@
 //!
 //! * a message table, so Event Viewer renders Promailer's Application-log entries
 //!   instead of "The description for Event ID ... cannot be found";
-//! * version info (file properties, MSI file versioning).
+//! * version info (file properties, MSI file versioning);
+//! * the application icon (Apps & features, Explorer).
 
 use std::path::Path;
+
+#[path = "assets/icon.rs"]
+mod icon;
+#[path = "assets/winres.rs"]
+mod winres;
 
 /// Event IDs covered by the message table; must include every ID in `src/eventlog.rs`.
 const FIRST_EVENT_ID: u32 = 1000;
@@ -12,6 +18,7 @@ const LAST_EVENT_ID: u32 = 1199;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=assets");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -20,7 +27,8 @@ fn main() {
     let messages = out.join("messages.bin");
     std::fs::write(&messages, message_table()).expect("writing message table");
     let rc = out.join("promailer.rc");
-    std::fs::write(&rc, resource_script(&messages)).expect("writing resource script");
+    let script = resource_script(&messages) + &winres::icon_line(out, &icon::ico(&winres::ICO_SIZES));
+    std::fs::write(&rc, script).expect("writing resource script");
     embed_resource::compile(&rc, embed_resource::NONE).manifest_optional().expect("compiling Windows resources");
 }
 
@@ -48,39 +56,7 @@ fn message_table() -> Vec<u8> {
 }
 
 fn resource_script(messages: &Path) -> String {
-    let v = |k: &str| std::env::var(k).unwrap_or_default();
-    let (major, minor, patch) =
-        (v("CARGO_PKG_VERSION_MAJOR"), v("CARGO_PKG_VERSION_MINOR"), v("CARGO_PKG_VERSION_PATCH"));
-    let version = v("CARGO_PKG_VERSION");
     let messages = messages.display().to_string().replace('\\', "\\\\");
     // Type 11 is RT_MESSAGETABLE; the numeric form works with both rc.exe and llvm-rc.
-    format!(
-        r#"1 11 "{messages}"
-
-1 VERSIONINFO
-FILEVERSION {major},{minor},{patch},0
-PRODUCTVERSION {major},{minor},{patch},0
-FILEOS 0x40004
-FILETYPE 0x1
-BEGIN
-  BLOCK "StringFileInfo"
-  BEGIN
-    BLOCK "040904B0"
-    BEGIN
-      VALUE "CompanyName", "Promailer"
-      VALUE "FileDescription", "Promailer SMTP Server"
-      VALUE "FileVersion", "{version}"
-      VALUE "InternalName", "promailer"
-      VALUE "OriginalFilename", "promailer.exe"
-      VALUE "ProductName", "Promailer"
-      VALUE "ProductVersion", "{version}"
-    END
-  END
-  BLOCK "VarFileInfo"
-  BEGIN
-    VALUE "Translation", 0x409, 1200
-  END
-END
-"#
-    )
+    format!("1 11 \"{messages}\"\n") + &winres::version_info("Promailer SMTP Server", "promailer.exe")
 }

@@ -2384,6 +2384,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyboard-types"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
+dependencies = [
+ "bitflags 2.13.2",
+ "serde",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2672,6 +2682,24 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "muda"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4340e89c178916e62879c5c36b7f699019369be413e496178a6983ce91b8bc03"
+dependencies = [
+ "crossbeam-channel",
+ "dpi",
+ "keyboard-types",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "png",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3565,6 +3593,7 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "parking_lot",
+ "promailer-crash",
  "rand 0.8.8",
  "ring",
  "rsa",
@@ -3592,6 +3621,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "promailer-crash"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "ureq",
+]
+
+[[package]]
 name = "promailer-manager"
 version = "0.1.0"
 dependencies = [
@@ -3601,12 +3642,28 @@ dependencies = [
  "egui",
  "egui_extras",
  "egui_plot",
+ "embed-resource",
  "password-hash",
+ "promailer-crash",
  "serde",
  "serde_json",
  "toml 0.8.23",
  "toml_edit 0.22.27",
  "ureq",
+]
+
+[[package]]
+name = "promailer-tray"
+version = "0.1.0"
+dependencies = [
+ "embed-resource",
+ "promailer-crash",
+ "serde",
+ "serde_json",
+ "tray-icon",
+ "ureq",
+ "windows-service",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4855,6 +4912,25 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
+]
+
+[[package]]
+name = "tray-icon"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f5cc5858ecf9574ddd8f0032a2ff7ffd6f7724d2b81e48b9374984b3fd6ddc9"
+dependencies = [
+ "crossbeam-channel",
+ "muda",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "once_cell",
+ "png",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

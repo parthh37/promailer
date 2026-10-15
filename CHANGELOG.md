@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Status icon, desktop shortcut and website (new)
+- `promailer-tray.exe`: notification-area icon showing whether the service is running (colour
+  badge, queue size and host name in the tooltip) with a menu to open the Manager, start/stop/
+  restart the service, edit the configuration, open Event Viewer or Services, and report a
+  problem. Starts at sign-in for every user; each user can turn that off from the menu.
+- Setup.exe and the MSI add a Promailer Manager desktop shortcut and register the status icon
+  (Setup tasks `desktopicon` and `tray`; MSI properties `DESKTOP_SHORTCUT` and `TRAY`).
+- Executables carry the Promailer icon and version information.
+- Project website on GitHub Pages (`site/`).
+
+### Crash reports (new)
+- Internal errors (panics) in the service, Manager and status icon are saved as crash reports
+  with email/IP addresses, host and account names removed; the service also logs Event ID 1020.
+- Promailer Manager lists them (banner, Help → Crash Reports) and opens a pre-filled GitHub
+  issue for each. With `[crash_reports] github_token` set, the service files them itself: one
+  issue per distinct bug, repeats as comments.
+- API: `GET /api/v1/crashes`, `DELETE /api/v1/crashes/{id}` (admin).
+- `promailer service restart`.
+
 ### Promailer Manager (new)
 - Native desktop GUI (`promailer-manager.exe`) installed with a Start-menu shortcut, laid out
   like the IIS 6 SMTP manager: console tree, details pane and a virtual-server Properties sheet
