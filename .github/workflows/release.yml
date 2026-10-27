@@ -1,11 +1,25 @@
 name: Release
 
-# Push a tag like v0.2.0 (matching Cargo.toml) to build, test, package and publish.
+# Two ways to release:
+# - Actions tab > Release > Run workflow on main, choosing patch, minor or major: bumps Cargo.toml,
+#   Cargo.lock and CHANGELOG.md, commits and tags on main, then builds, tests and publishes.
+# - Push a tag like v0.2.0 (matching Cargo.toml) yourself.
+# Running it with "none" only builds and smoke-tests the installers as an artifact; nothing is published.
 on:
   push:
     tags: ["v*"]
-  # Manual runs build and smoke-test the installer and upload it as an artifact; they never publish.
   workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (none = test build only, no release)"
+        type: choice
+        options: [none, patch, minor, major]
+        default: none
+
+# One release at a time, so two bumps can't race for the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -15,13 +29,56 @@ env:
   # Passed via env (never interpolated into scripts) to avoid shell injection via ref names.
   REF_NAME: ${{ github.ref_name }}
   REF_TYPE: ${{ github.ref_type }}
+  BUMP: ${{ inputs.bump || 'none' }}
 
 jobs:
-  windows:
-    runs-on: windows-latest
-    timeout-minutes: 60
+  # Decides which tag (if any) this run releases, creating it first when a bump was requested.
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        if: env.BUMP != 'none'
+
+      # Pushed with GITHUB_TOKEN, so the new tag does not start a second run of this workflow.
+      - name: Bump version, commit and tag
+        if: env.BUMP != 'none'
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Releases are cut from main; run the workflow on main, not $REF_NAME"
+            exit 1
+          fi
+          version=$(scripts/bump-version.sh "$BUMP")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release v$version"
+          git tag -a "v$version" -m "Promailer $version"
+          # Atomic: if main moved or the tag exists, neither the commit nor the tag is pushed.
+          git push --atomic origin HEAD:main "v$version"
+          echo "BUMPED_TAG=v$version" >> "$GITHUB_ENV"
+          echo "::notice::Releasing v$version"
+
+      - name: Release tag
+        id: tag
+        run: |
+          if [ -n "${BUMPED_TAG:-}" ]; then tag=$BUMPED_TAG
+          elif [ "$REF_TYPE" = tag ]; then tag=$REF_NAME
+          else tag=; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # Empty for test builds; the publish steps only run when it is set.
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -31,8 +88,8 @@ jobs:
         shell: pwsh
         run: |
           $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
-          if ($env:REF_TYPE -eq "tag" -and "v$v" -ne $env:REF_NAME) {
-            throw "Tag $env:REF_NAME does not match Cargo.toml version $v"
+          if ($env:TAG -and "v$v" -ne $env:TAG) {
+            throw "Tag $env:TAG does not match Cargo.toml version $v"
           }
           "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -133,7 +190,7 @@ jobs:
           path: dist/*
 
       - name: Release notes from CHANGELOG
-        if: github.ref_type == 'tag'
+        if: env.TAG != ''
         shell: pwsh
         env:
           SIGNING: ${{ steps.signing.outputs.enabled }}
@@ -147,10 +204,10 @@ jobs:
           Set-Content release-notes.md $notes -Encoding utf8
 
       - name: Publish GitHub release
-        if: github.ref_type == 'tag'
+        if: env.TAG != ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:REF_NAME (Get-ChildItem dist -File).FullName `
+          gh release create $env:TAG (Get-ChildItem dist -File).FullName `
             --title "Promailer $env:VERSION" --notes-file release-notes.md --verify-tag
