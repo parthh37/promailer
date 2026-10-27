@@ -434,10 +434,17 @@ Windows-only code can be type-checked from macOS or Linux with
 
 ## Releasing
 
-Every release ships a Windows installer automatically:
+Every release ships a Windows installer automatically. Describe the changes under `## [Unreleased]`
+in `CHANGELOG.md` (they become the release notes), merge to `main`, then either:
 
-1. bump `version` in `Cargo.toml` and add a `## [x.y.z]` section to `CHANGELOG.md`
-2. commit, then tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`
+- **From GitHub:** Actions → **Release** → **Run workflow** on `main`, choose `patch`, `minor` or
+  `major`. The workflow bumps `Cargo.toml`, `Cargo.lock` and `CHANGELOG.md`, commits
+  `Release vX.Y.Z` to `main` and pushes the tag. Choosing `none` only builds and smoke-tests the
+  installers (downloadable from the run) without releasing.
+- **From a terminal:** `scripts/bump-version.sh patch` (or `minor`/`major`), commit, then
+  `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+
+If a release run fails after tagging, fix the cause and use **Re-run failed jobs**; the tag stays.
 
 The [Release workflow](.github/workflows/release.yml) then runs the tests on Windows, builds the
 `Setup.exe`, MSI and portable zip, **installs both installers on a clean Windows runner, starts the
